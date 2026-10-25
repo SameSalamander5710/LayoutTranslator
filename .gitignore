@@ -4,3 +4,5 @@ src-tauri/gen/
 src-tauri/resources/models/*/*.onnx
 src-tauri/resources/fonts/*.ttf
 src-tauri/resources/pdfium/*
+
+opencode.json
