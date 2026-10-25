@@ -2,7 +2,7 @@
 
 A free, local-first desktop app. Drop in an image or PDF, get back the same page with the text translated and the layout kept. Rust core, Tauri UI, Windows first, macOS second, downloadable from GitHub Releases with nothing else to install.
 
-Status: updated to match the first code draft (uncompiled). Decisions made since the first version: PaddleOCR via `oar-ocr` with the English model bundled and extra languages added as folders; **llama.cpp / any OpenAI-compatible endpoint is the only translation engine (Google Translate was dropped)**; PDF in and out, a classical inpainting fill and an OCR engine cache are implemented in first form. Open items live in `TODO_FOR_LOCAL_AI.md`. Items marked **(verify)** need checking before you depend on them.
+Status: compiles with updated deps (oar-ocr 0.10). English PP-OCRv5 models downloaded, pdfium bundled via script. Icons generated. PaddleOCR via `oar-ocr` with English model bundled and extra languages added as folders; **llama.cpp / any OpenAI-compatible endpoint is the only translation engine (Google Translate was dropped)**; PDF in and out, a classical inpainting fill and an OCR engine cache are implemented in first form. Open items live in `TODO_FOR_LOCAL_AI.md`. Items marked **(verify)** need checking before you depend on them.
 
 ---
 

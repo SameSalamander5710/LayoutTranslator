@@ -12,4 +12,4 @@ Drop in an image, get it back with the text translated in the same layout. OCR i
 The English model ships in `models/en` next to the app. To add one, create `models/<name>/` there with `det.onnx`, `rec.onnx`, `dict.txt` and restart. The Windows installer is per-user so that folder is writable.
 
 ## Status
-Images and PDFs in and out, classical inpainting, engine cache. Uncompiled first draft: follow `TODO_FOR_LOCAL_AI.md` step by step (build fixes first, then models, then quality).
+Builds with `cargo check` in `src-tauri`. Models (PP-OCRv5 English) and pdfium downloaded via `npm run models`. Icons generated. Follow `TODO_FOR_LOCAL_AI.md` step by step.

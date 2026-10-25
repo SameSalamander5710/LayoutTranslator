@@ -1,15 +1,15 @@
 use ab_glyph::{FontArc, PxScale};
-use base64::Engine;
+use base64::Engine as _;
 use image::{DynamicImage, Rgb, RgbImage, Rgba};
 use imageproc::{drawing::{draw_filled_rect_mut, draw_text_mut, text_size}, rect::Rect};
 use oar_ocr::prelude::*;
+use oar_ocr::oarocr::OAROCR;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub const PDF_DPI: f32 = 200.0;
-// TODO(local AI): confirm the exact engine type name exported by oar-ocr (assumed OAROCR).
 pub type Engine = OAROCR;
 /// Caches built OCR engines per model folder so only the first run pays the load cost.
 #[derive(Default)]
@@ -27,13 +27,18 @@ struct Line { b: [f32; 4], t: String, c: f32 }
 
 pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, String> {
     let p = |n: &str| dir.join(n).to_string_lossy().to_string();
+    let key = dir.to_string_lossy().to_string();
     let engine = {
         let mut m = cache.0.lock().unwrap();
-        match m.get(&p("")) {
+        match m.get(&key) {
             Some(e) => e.clone(),
             None => {
-                let e = Arc::new(OAROCRBuilder::new(p("det.onnx"), p("rec.onnx"), p("dict.txt")).build().map_err(|e| e.to_string())?);
-                m.insert(p(""), e.clone());
+                let e = Arc::new(
+                    OAROCRBuilder::new(p("det.onnx"), p("rec.onnx"), p("dict.txt"))
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                );
+                m.insert(key.clone(), e.clone());
                 e
             }
         }
@@ -43,11 +48,16 @@ pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, St
     let mut lines = vec![];
     for r in &res[0].text_regions {
         if let Some((t, c)) = r.text_with_confidence() {
-            // ADJUST HERE if the compiler disagrees: this assumes a polygon with `.points` having `.x`/`.y`.
-            let pts = &r.bounding_box.points;
-            let (x0, x1) = pts.iter().fold((f32::MAX, f32::MIN), |a, q| (a.0.min(q.x), a.1.max(q.x)));
-            let (y0, y1) = pts.iter().fold((f32::MAX, f32::MIN), |a, q| (a.0.min(q.y), a.1.max(q.y)));
-            lines.push(Line { b: [x0, y0, x1 - x0, y1 - y0], t: t.to_string(), c: c as f32 });
+            let bbox = &r.bounding_box;
+            let x0 = bbox.x_min();
+            let y0 = bbox.y_min();
+            let x1 = bbox.x_max();
+            let y1 = bbox.y_max();
+            lines.push(Line {
+                b: [x0, y0, x1 - x0, y1 - y0],
+                t: t.to_string(),
+                c: c,
+            });
         }
     }
     Ok(group(lines))

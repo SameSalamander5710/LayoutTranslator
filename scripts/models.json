@@ -1,7 +1,11 @@
 {
   "fonts": { "NotoSans-Regular.ttf": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf" },
   "models": {
-    "en": { "det.onnx": "", "rec.onnx": "", "dict.txt": "" }
+    "en": {
+      "det.onnx": "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_det.onnx",
+      "rec.onnx": "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/en_pp-ocrv5_mobile_rec.onnx",
+      "dict.txt": "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/ppocrv5_en_dict.txt"
+    }
   },
-  "_help": "Fill the empty model URLs with the PP-OCRv5 mobile detection model, the English recognition model and its dictionary (as ONNX). See docs/models.md in github.com/aisinker/oar-ocr for download links."
+  "_help": "PP-OCRv5 English models from GreatV/oar-ocr v0.3.0 release."
 }

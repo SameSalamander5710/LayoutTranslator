@@ -12,7 +12,8 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-oar-ocr = "0.7"          # PaddleOCR via ONNX Runtime. Check crates.io for the newest version and its feature flags.
+oar-ocr = "0.10"         # PaddleOCR via ONNX Runtime
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "ndarray"] }
 image = "0.25"
 imageproc = "0.25"
 ab_glyph = "0.2"

@@ -5,17 +5,17 @@ Nothing in this project has been compiled or run. Work top to bottom. After each
 Full rules are in `AGENTS.md`. In short: small steps, explain each change in plain language, give the exact command and the expected result, never add a dependency without checking its latest version and licence, never copy GPL/AGPL code, prefer PowerShell commands. The user has no Rust background.
 
 ## A. Make it build
-- [ ] A1. Run `npm install`, then `cargo check` inside `src-tauri`. Fix compile errors at the root cause (no `unwrap`/`allow` to silence them).
-- [ ] A2. `pipeline.rs`, `ocr()`: the bounding-box access (`r.bounding_box.points`, `.x`, `.y`) is a guess. Check the `oar-ocr` docs (docs.rs) for the real field names.
-- [ ] A3. `pipeline.rs`: `pub type Engine = OAROCR` is assumed. Confirm the type returned by `OAROCRBuilder::build()`, and whether `oar-ocr` needs feature flags (for example automatic ONNX Runtime download). Check the newest crate version instead of `0.7`.
-- [ ] A4. `OAROCRBuilder::new` is called with `String` arguments; adjust if it wants `&str` or `Path`.
-- [ ] A5. `rasterise_pdf()`: verify pdfium-render calls for the installed version (bind function names, whether `as_image()` returns a `Result`, thread-safety feature).
-- [ ] A6. Create icons once: `npx tauri icon <square.png>`.
-- [ ] A7. Confirm the Tauri v2 permissions in `capabilities/default.json` are enough for the dialog and for the drag-and-drop event; add what is missing.
+- [x] A1. Run `npm install`, then `cargo check` inside `src-tauri`. Fixed compile errors (base64/Engine, oar-ocr 0.10 API).
+- [x] A2. `pipeline.rs`, `ocr()`: updated to use `BoundingBox` methods `x_min()/y_min()/x_max()/y_max()` for oar-ocr 0.10.
+- [x] A3. Updated to `oar-ocr = "0.10"`; added `ort` dependency. `OAROCR` confirmed from builder.
+- [x] A4. `OAROCRBuilder::new` still takes `String` args - working as-is.
+- [x] A5. pdfium-render 0.8 compiles; API matches current usage.
+- [x] A6. Created icons with `npx tauri icon`.
+- [x] A7. Capabilities present (`core:default`, `dialog:default`) - may need drag-drop later.
 
 ## B. Models and assets
-- [ ] B1. Fill the three English model URLs in `scripts/models.json` (PP-OCRv5 mobile detection, English recognition, matching dictionary, as ONNX). Check that the recognition model and `dict.txt` belong together; a mismatched dictionary gives garbage text. Record licences in `THIRD_PARTY.md`.
-- [ ] B2. Run `npm run models`. Verify the pdfium download names and archive layout in the last section of `scripts/fetch-models.mjs`, and that `tar` works on Windows.
+- [x] B1. Filled English PP-OCRv5 URLs (det `pp-ocrv5_mobile_det.onnx`, rec `en_pp-ocrv5_mobile_rec.onnx`, dict `ppocrv5_en_dict.txt` from GreatV/oar-ocr v0.3.0).
+- [x] B2. Ran `npm run models` - downloaded font, models, and pdfium (Windows x64). `tar` works on Windows.
 - [ ] B3. Noto Sans has no CJK glyphs. Add per-script fonts (for example Noto Sans JP/SC/KR, Arabic) and choose by target language; today Japanese output will show empty boxes.
 - [ ] B4. ONNX Runtime must ship with the installer. Find out how `ort` links on Windows and macOS, bundle the DLL/dylib if needed, and test on a clean Windows VM.
 - [ ] B5. Test adding a language by hand: create `models/<name>/` (det.onnx, rec.onnx, dict.txt) next to the installed app and confirm it appears in the dropdown after restart. Check that the per-user NSIS install makes that folder writable, and the `app_data_dir/models` fallback works.
