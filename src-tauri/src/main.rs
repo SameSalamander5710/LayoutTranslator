@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod pipeline;
-use pipeline::{Block, EngineCache};
+use layout_translator::pipeline::{self, Block, EngineCache};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

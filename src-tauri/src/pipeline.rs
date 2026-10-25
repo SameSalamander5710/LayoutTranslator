@@ -23,7 +23,7 @@ pub struct Block {
 }
 
 // ---------- OCR (PaddleOCR via oar-ocr) ----------
-struct Line { b: [f32; 4], t: String, c: f32 }
+struct Line { b: [f32; 4], t: String, c: f32, fg: [u8; 3], bg: [u8; 3] }
 
 pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, String> {
     let p = |n: &str| dir.join(n).to_string_lossy().to_string();
@@ -33,8 +33,12 @@ pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, St
         match m.get(&key) {
             Some(e) => e.clone(),
             None => {
+                let mut det = oar_ocr::domain::TextDetectionConfig::default();
+                det.score_threshold = 0.25; // default 0.3: lower catches faint/small lines
+                det.box_threshold = 0.5; // default 0.6: lower keeps smaller boxes
                 let e = Arc::new(
                     OAROCRBuilder::new(p("det.onnx"), p("rec.onnx"), p("dict.txt"))
+                        .text_detection_config(det)
                         .build()
                         .map_err(|e| e.to_string())?,
                 );
@@ -44,7 +48,7 @@ pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, St
         }
     };
     let im = load_image(img).map_err(|e| e.to_string())?;
-    let res = engine.predict(vec![im]).map_err(|e| e.to_string())?;
+    let res = engine.predict(vec![im.clone()]).map_err(|e| e.to_string())?;
     let mut lines = vec![];
     for r in &res[0].text_regions {
         if let Some((t, c)) = r.text_with_confidence() {
@@ -53,17 +57,22 @@ pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, St
             let y0 = bbox.y_min();
             let x1 = bbox.x_max();
             let y1 = bbox.y_max();
+            let (fg, bg) = box_colors(&im, x0, y0, x1 - x0, y1 - y0);
             lines.push(Line {
                 b: [x0, y0, x1 - x0, y1 - y0],
                 t: t.to_string(),
                 c: c,
+                fg,
+                bg,
             });
         }
     }
     Ok(group(lines))
 }
 
-// Merge neighbouring lines (same column, similar height, small gap) into paragraph blocks.
+// Merge neighbouring lines into paragraph blocks. Lines only merge when they share
+// column (overlap), font size (height ratio), colour, and a small vertical gap —
+// so a differently-sized or differently-coloured line gets its own box.
 fn group(mut ls: Vec<Line>) -> Vec<Block> {
     ls.sort_by(|a, b| a.b[1].total_cmp(&b.b[1]));
     let mut out: Vec<(Block, u32, f32)> = vec![]; // block, line count, sum of line heights
@@ -72,7 +81,14 @@ fn group(mut ls: Vec<Line>) -> Vec<Block> {
         let k = out.iter().rposition(|(b, n, s)| {
             let [bx, by, bw, bh] = b.bbox;
             let avg = s / *n as f32;
-            x < bx + bw && x + w > bx && (y - (by + bh)) > -h * 0.3 && (y - (by + bh)) < h * 0.8 && h / avg > 0.7 && h / avg < 1.4
+            let min_h = h.min(avg);
+            let min_w = w.min(bw);
+            let overlap = (x + w).min(bx + bw) - x.max(bx);
+            let gap = y - (by + bh);
+            overlap > 0.5 * min_w
+                && h / avg > 0.85 && h / avg < 1.18 // same font size
+                && gap > -0.3 * min_h && gap < 0.5 * min_h // close lines
+                && color_dist(&l.fg, &b.fg) < 90 // same text colour
         });
         match k {
             Some(i) => {
@@ -82,28 +98,39 @@ fn group(mut ls: Vec<Line>) -> Vec<Block> {
                 b.bbox = [nx, ny, (bx + bw).max(x + w) - nx, (by + bh).max(y + h) - ny];
                 b.text = format!("{} {}", b.text, l.t); b.conf = b.conf.min(l.c); *n += 1; *s += h;
             }
-            None => out.push((Block { id: 0, bbox: l.b, text: l.t, translated: None, conf: l.c, font_px: 0.0, fg: [0; 3], bg: [255; 3] }, 1, h)),
+            None => out.push((Block { id: 0, bbox: l.b, text: l.t, translated: None, conf: l.c, font_px: 0.0, fg: l.fg, bg: l.bg }, 1, h)),
         }
     }
     out.into_iter().map(|(mut b, n, s)| { b.font_px = s / n as f32 * 0.85; b }).collect()
 }
 
+fn color_dist(a: &[u8; 3], b: &[u8; 3]) -> i32 {
+    (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).sum()
+}
+
 // Estimate background (median of a ring around the box) and text colour (mean of the most contrasting pixels).
-pub fn colors(img: &RgbImage, b: &mut Block) {
+fn box_colors(img: &RgbImage, x: f32, y: f32, bw: f32, bh: f32) -> ([u8; 3], [u8; 3]) {
     let (w, h) = img.dimensions();
-    let [x, y, bw, bh] = b.bbox;
     let cl = |v: f32, m: u32| (v.max(0.) as u32).min(m - 1);
     let (x0, y0, x1, y1) = (cl(x - 4., w), cl(y - 4., h), cl(x + bw + 4., w), cl(y + bh + 4., h));
     let mut ring: Vec<Rgb<u8>> = vec![];
     for xx in x0..=x1 { ring.push(*img.get_pixel(xx, y0)); ring.push(*img.get_pixel(xx, y1)); }
     for yy in y0..=y1 { ring.push(*img.get_pixel(x0, yy)); ring.push(*img.get_pixel(x1, yy)); }
-    for c in 0..3 { let mut v: Vec<u8> = ring.iter().map(|p| p[c]).collect(); v.sort(); b.bg[c] = v[v.len() / 2]; }
-    let d = |p: &Rgb<u8>| (0..3).map(|c| (p[c] as i32 - b.bg[c] as i32).abs()).sum::<i32>();
+    let mut bg = [0u8; 3];
+    for c in 0..3 { let mut v: Vec<u8> = ring.iter().map(|p| p[c]).collect(); v.sort(); bg[c] = v[v.len() / 2]; }
+    let d = |p: &Rgb<u8>| (0..3).map(|c| (p[c] as i32 - bg[c] as i32).abs()).sum::<i32>();
     let mut inner: Vec<(i32, Rgb<u8>)> = vec![];
     for yy in cl(y, h)..=cl(y + bh, h) { for xx in cl(x, w)..=cl(x + bw, w) { let p = *img.get_pixel(xx, yy); inner.push((d(&p), p)); } }
     inner.sort_by(|a, c| c.0.cmp(&a.0));
     let n = (inner.len() / 10).max(1);
-    for c in 0..3 { b.fg[c] = (inner[..n].iter().map(|(_, p)| p[c] as u32).sum::<u32>() / n as u32) as u8; }
+    let mut fg = [0u8; 3];
+    for c in 0..3 { fg[c] = (inner[..n].iter().map(|(_, p)| p[c] as u32).sum::<u32>() / n as u32) as u8; }
+    (fg, bg)
+}
+
+pub fn colors(img: &RgbImage, b: &mut Block) {
+    let [x, y, bw, bh] = b.bbox;
+    (b.fg, b.bg) = box_colors(img, x, y, bw, bh);
 }
 
 // ---------- Translation: any OpenAI-compatible endpoint (llama.cpp's llama-server, or a hosted API with a key) ----------
@@ -138,11 +165,23 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, model:
 }
 
 // ---------- Erase + typeset ----------
-fn wrap(f: &FontArc, px: f32, text: &str, maxw: u32) -> Vec<String> {
+pub fn wrap(f: &FontArc, px: f32, text: &str, maxw: u32) -> Vec<String> {
     let mut out = vec![];
     for para in text.split('\n') {
         let mut line = String::new();
         for w in para.split_whitespace() {
+            if text_size(PxScale::from(px), f, w).0 > maxw {
+                // Word wider than the box: break it character by character.
+                if !line.is_empty() { out.push(std::mem::take(&mut line)); }
+                let mut piece = String::new();
+                for ch in w.chars() {
+                    let t = format!("{piece}{ch}");
+                    if !piece.is_empty() && text_size(PxScale::from(px), f, &t).0 > maxw { out.push(std::mem::take(&mut piece)); }
+                    piece.push(ch);
+                }
+                line = piece;
+                continue;
+            }
             let t = if line.is_empty() { w.to_string() } else { format!("{line} {w}") };
             if text_size(PxScale::from(px), f, &t).0 > maxw && !line.is_empty() { out.push(std::mem::take(&mut line)); line = w.to_string(); } else { line = t; }
         }
@@ -151,21 +190,120 @@ fn wrap(f: &FontArc, px: f32, text: &str, maxw: u32) -> Vec<String> {
     out
 }
 
+// Ink extent of a line relative to the draw origin y, replicating imageproc's layout
+// (baseline at y + ascent). Returns (ink top, ink bottom, advance width).
+pub fn text_geom(f: &FontArc, px: f32, text: &str) -> (f32, f32, f32) {
+    use ab_glyph::{point, Font as _, GlyphId, ScaleFont};
+    let font = f.as_scaled(PxScale::from(px));
+    let mut w = 0f32;
+    let (mut top, mut bot) = (f32::MAX, f32::MIN);
+    let mut last: Option<GlyphId> = None;
+    for c in text.chars() {
+        let gid = font.glyph_id(c);
+        let glyph = gid.with_scale_and_position(PxScale::from(px), point(w, font.ascent()));
+        w += font.h_advance(gid);
+        if let Some(g) = font.outline_glyph(glyph) {
+            if let Some(l) = last { w += font.kern(gid, l); }
+            last = Some(gid);
+            let bb = g.px_bounds();
+            top = top.min(bb.min.y);
+            bot = bot.max(bb.max.y);
+        }
+    }
+    if top == f32::MAX { (0.0, 0.0, w) } else { (top, bot, w) }
+}
+
+// Line spacing: full em height so consecutive lines never overlap.
+// height_unscaled is in font units, so scale by px / units_per_em.
+pub fn line_spacing(f: &FontArc, px: f32) -> f32 {
+    use ab_glyph::Font as _;
+    let upem = f.units_per_em().unwrap_or(1000.0);
+    f.height_unscaled() as f32 / upem * px
+}
+
+fn fits(f: &FontArc, text: &str, w: u32, h: u32, px: f32) -> bool {
+    let lines = wrap(f, px, text, w);
+    let ls = line_spacing(f, px);
+    let (mut top, mut bot) = (f32::MAX, f32::MIN);
+    for (i, l) in lines.iter().enumerate() {
+        if l.is_empty() { continue; }
+        let (t, b, wpx) = text_geom(f, px, l);
+        if wpx > w as f32 { return false; }
+        top = top.min(i as f32 * ls + t);
+        bot = bot.max(i as f32 * ls + b);
+    }
+    if top == f32::MAX { return true; }
+    bot - top <= h as f32
+}
+
+// Largest px where the wrapped text fits inside w×h (min 3px, best effort).
+// Feasibility is monotonic in px (bigger px → wider lines → more lines → taller),
+// so binary search over [3, hi] finds the boundary. hi bounds px because even a
+// single line's ink must fit in h.
+pub fn fit_px(f: &FontArc, text: &str, w: u32, h: u32) -> f32 {
+    const MIN_PX: f32 = 3.0;
+    let (top, bot, _) = text_geom(f, 100.0, text);
+    let per_px = (bot - top) / 100.0;
+    if per_px <= 0.0 || w < 1 || h < 1 { return MIN_PX; }
+    if !fits(f, text, w, h, MIN_PX) { return MIN_PX; } // best effort
+    let hi = (h as f32 / per_px).max(MIN_PX);
+    if fits(f, text, w, h, hi) { return hi; }
+    let (mut lo, mut hi) = (MIN_PX, hi);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if fits(f, text, w, h, mid) { lo = mid; } else { hi = mid; }
+    }
+    lo
+}
+
 pub fn render(img: &Path, font_path: &Path, blocks: &[Block]) -> Result<image::RgbaImage, String> {
     let mut im = image::open(img).map_err(|e| e.to_string())?.to_rgba8();
     let font = FontArc::try_from_vec(std::fs::read(font_path).map_err(|e| format!("Font missing ({}): {e}", font_path.display()))?).map_err(|e| e.to_string())?;
     for b in blocks {
         let [x, y, w, h] = b.bbox;
         erase(&mut im, b);
+        overlay_bg(&mut im, b);
         let t = b.translated.as_deref().unwrap_or(&b.text);
-        let mut px = b.font_px * 1.05;
-        let mut lines = wrap(&font, px, t, w as u32);
-        while px > 7.0 && lines.len() as f32 * px * 1.2 > h + px * 0.3 { px -= 0.5; lines = wrap(&font, px, t, w as u32); }
+        if t.trim().is_empty() || w < 4.0 || h < 4.0 { continue; }
+        let px = fit_px(&font, t, w as u32, h as u32);
+        let lines = wrap(&font, px, t, w as u32);
+        let ls = line_spacing(&font, px);
+        let (mut top, mut bot) = (f32::MAX, f32::MIN);
         for (i, l) in lines.iter().enumerate() {
-            draw_text_mut(&mut im, Rgba([b.fg[0], b.fg[1], b.fg[2], 255]), x as i32, (y + i as f32 * px * 1.2) as i32, PxScale::from(px), &font, l);
+            if l.is_empty() { continue; }
+            let (t2, b2, _) = text_geom(&font, px, l);
+            top = top.min(i as f32 * ls + t2);
+            bot = bot.max(i as f32 * ls + b2);
+        }
+        if top == f32::MAX { continue; }
+        let y0 = y + (h - (bot - top)) / 2.0 - top; // vertically centred
+        for (i, l) in lines.iter().enumerate() {
+            if l.is_empty() { continue; }
+            draw_text_mut(&mut im, Rgba([b.fg[0], b.fg[1], b.fg[2], 255]), x as i32, (y0 + i as f32 * ls) as i32, PxScale::from(px), &font, l);
         }
     }
     Ok(im)
+}
+
+// Paints the box background at 75% opacity so content underneath stays faintly visible.
+fn overlay_bg(im: &mut image::RgbaImage, b: &Block) {
+    let (iw, ih) = im.dimensions();
+    let [x, y, w, h] = b.bbox;
+    let x0 = (x as i32).max(0); let y0 = (y as i32).max(0);
+    let x1 = ((x + w) as i32).min(iw as i32 - 1); let y1 = ((y + h) as i32).min(ih as i32 - 1);
+    if x1 <= x0 || y1 <= y0 { return; }
+    const A: f32 = 0.75;
+    for yy in y0..=y1 {
+        for xx in x0..=x1 {
+            let p = *im.get_pixel(xx as u32, yy as u32);
+            im.put_pixel(xx as u32, yy as u32, Rgba([
+                (b.bg[0] as f32 * A + p[0] as f32 * (1.0 - A)) as u8,
+                (b.bg[1] as f32 * A + p[1] as f32 * (1.0 - A)) as u8,
+                (b.bg[2] as f32 * A + p[2] as f32 * (1.0 - A)) as u8,
+                255,
+            ]));
+        }
+    }
 }
 
 pub fn png_data_url(im: &DynamicImage) -> Result<String, String> {
@@ -266,4 +404,117 @@ pub fn write_pdf(pages: &[image::RgbaImage], dpi: f32, out: &Path) -> Result<(),
     for off in &offs { o.extend(format!("{off:010} 00000 n \n").as_bytes()); }
     o.extend(format!("trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF", offs.len() + 1).as_bytes());
     std::fs::write(out, o).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(x: f32, y: f32, w: f32, h: f32, t: &str, fg: [u8; 3]) -> Line {
+        Line { b: [x, y, w, h], t: t.into(), c: 0.9, fg, bg: [255; 3] }
+    }
+
+    fn test_font() -> FontArc {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        FontArc::try_from_vec(std::fs::read(p).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn group_merges_same_size_close_lines() {
+        let ls = vec![
+            line(10., 10., 100., 20., "foo", [10, 10, 10]),
+            line(10., 35., 100., 20., "bar", [12, 12, 12]),
+        ];
+        let b = group(ls);
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].text, "foo bar");
+    }
+
+    #[test]
+    fn group_splits_different_sizes() {
+        let ls = vec![
+            line(10., 10., 100., 20., "small", [10, 10, 10]),
+            line(10., 35., 100., 40., "big", [10, 10, 10]),
+        ];
+        assert_eq!(group(ls).len(), 2);
+    }
+
+    #[test]
+    fn group_splits_different_colours() {
+        let ls = vec![
+            line(10., 10., 100., 20., "black", [10, 10, 10]),
+            line(10., 35., 100., 20., "red", [200, 30, 30]),
+        ];
+        assert_eq!(group(ls).len(), 2);
+    }
+
+    #[test]
+    fn group_keeps_far_apart_lines() {
+        let ls = vec![
+            line(10., 10., 100., 20., "a", [10, 10, 10]),
+            line(10., 80., 100., 20., "b", [10, 10, 10]),
+        ];
+        assert_eq!(group(ls).len(), 2);
+    }
+
+    #[test]
+    fn wrap_breaks_long_words() {
+        let font = test_font();
+        let lines = wrap(&font, 20.0, "Einheitsfeier", 30);
+        assert!(lines.len() > 1);
+        for l in &lines {
+            assert!(text_size(PxScale::from(20.0), &font, l).0 <= 30);
+        }
+    }
+
+    #[test]
+    fn fit_px_result_fits_box() {
+        let font = test_font();
+        let text = "The Day of German Unity is a public holiday.";
+        let (w, h) = (200u32, 60u32);
+        let px = fit_px(&font, text, w, h);
+        let lines = wrap(&font, px, text, w);
+        let ls = line_spacing(&font, px);
+        let (mut top, mut bot) = (f32::MAX, f32::MIN);
+        for (i, l) in lines.iter().enumerate() {
+            if l.is_empty() { continue; }
+            let (t, b, wpx) = text_geom(&font, px, l);
+            assert!(wpx <= w as f32, "line {i} too wide: {wpx}");
+            top = top.min(i as f32 * ls + t);
+            bot = bot.max(i as f32 * ls + b);
+        }
+        assert!(bot - top <= h as f32, "text too tall: {} > {h}", bot - top);
+    }
+
+    #[test]
+    fn fit_px_is_maximal_and_uses_wrapping() {
+        let font = test_font();
+        // Tall narrow box + long text: the best fit wraps to several lines and
+        // uses a larger px than the text could on a single line.
+        let text = "word word word word word word word word word";
+        let (w, h) = (120u32, 200u32);
+        let px = fit_px(&font, text, w, h);
+        assert!(fits(&font, text, w, h, px), "chosen px {px} must fit");
+        assert!(!fits(&font, text, w, h, px * 1.1), "px*1.1 must not fit, so {px} is maximal");
+        // It must beat the single-line size (the old bug returned the 1-line px).
+        let (_, _, width100) = text_geom(&font, 100.0, text);
+        let one_line_px = w as f32 / width100 * 100.0;
+        assert!(px > one_line_px, "px {px} should exceed single-line px {one_line_px} via wrapping");
+    }
+
+    // The chosen px must be maximal even when the best fit is a single line
+    // (guards against the search returning a px smaller than the true max).
+    #[test]
+    fn fit_px_maximal_single_line() {
+        let font = test_font();
+        for (text, w, h) in [
+            ("FOUSLOND ORGANIZATION", 265u32, 19u32),
+            ("PRESENTS", 77u32, 14u32),
+            ("OCTOBER 3RD EXCELLA PARK", 430u32, 30u32),
+        ] {
+            let px = fit_px(&font, text, w, h);
+            assert!(fits(&font, text, w, h, px), "{text}: chosen px {px} must fit");
+            assert!(!fits(&font, text, w, h, px * 1.05), "{text}: px*1.05 must not fit, so {px} is maximal");
+        }
+    }
 }
