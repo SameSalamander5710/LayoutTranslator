@@ -40,18 +40,15 @@ fn open_models_dir(app: AppHandle) -> Result<(), String> {
 struct Page { width: u32, height: u32, original: String, blocks: Vec<Block>, layer_lines: usize, ocr_ran: bool }
 
 #[tauri::command]
-async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: String, lang: String) -> Result<Page, String> {
-    let dir = lang_dir(&app, &lang)?;
+async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: String, lang: String, mode: Option<String>) -> Result<Page, String> {
+    // mode: "hybrid" (default), "ocr" or "text" (see pipeline::detect). Text-only mode needs no OCR model.
+    let mode = mode.unwrap_or_else(|| "hybrid".into());
+    let dir = if mode == "text" { PathBuf::new() } else { lang_dir(&app, &lang)? };
     let p = PathBuf::from(&path);
     let p2 = p.clone();
     let dir2 = dir.clone();
     let cache = Arc::new(EngineCache::default());
-    // PDF pages carry their selectable text (saved when the PDF was opened): use it first, OCR the rest.
-    let layer = pipeline::load_layer(&p);
-    let (mut blocks, layer_lines, ocr_ran) = tauri::async_runtime::spawn_blocking(move || match layer {
-        Some(l) => pipeline::ocr_hybrid(&p2, &dir2, &cache, &l),
-        None => pipeline::ocr(&p2, &dir2, &cache).map(|b| (b, 0, true)),
-    })
+    let (mut blocks, layer_lines, ocr_ran) = tauri::async_runtime::spawn_blocking(move || pipeline::detect(&p2, &dir2, &cache, &mode))
         .await
         .map_err(|e| e.to_string())??;
     let im = image::open(&p).map_err(|e| e.to_string())?;

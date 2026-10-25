@@ -136,14 +136,15 @@ fn overlap_frac(a: &[f32; 4], b: &[f32; 4]) -> f32 {
 ///    selectable text painted over, so only the remaining text is read. OCR lines that still fall
 ///    on selectable text are dropped.
 /// 3. All lines are grouped into blocks together.
-pub fn ocr_hybrid(img: &Path, dir: &Path, cache: &EngineCache, layer: &TextLayer) -> Result<(Vec<Block>, usize, bool), String> {
+/// With `allow_ocr == false` only step 1 runs (selectable text only; images and scanned text are ignored).
+pub fn ocr_hybrid(img: &Path, dir: &Path, cache: &EngineCache, layer: &TextLayer, allow_ocr: bool) -> Result<(Vec<Block>, usize, bool), String> {
     let im = load_image(img).map_err(|e| e.to_string())?;
     let mut lines: Vec<Line> = merge_layer_lines(&layer.lines).iter().filter(|l| !l.t.trim().is_empty() && l.b[2] >= 1.0 && l.b[3] >= 1.0).map(|l| {
         let (fg, bg) = box_colors(&im, l.b[0], l.b[1], l.b[2], l.b[3]);
         Line { b: l.b, t: l.t.trim().to_string(), c: 1.0, fg, bg }
     }).collect();
     let n_layer = lines.len();
-    let run_ocr = n_layer == 0 || layer.has_images;
+    let run_ocr = allow_ocr && (n_layer == 0 || layer.has_images);
     if run_ocr {
         let mut masked = im.clone();
         for l in &lines {
@@ -155,6 +156,20 @@ pub fn ocr_hybrid(img: &Path, dir: &Path, cache: &EngineCache, layer: &TextLayer
         }
     }
     Ok((group(lines), n_layer, run_ocr))
+}
+
+/// Text identification method chosen in the UI:
+/// - "hybrid": selectable PDF text first, OCR for the rest (plain images are just OCR'd)
+/// - "ocr":    OCR only, the PDF text layer is ignored
+/// - "text":   selectable PDF text only, nothing is OCR'd
+/// Returns (blocks, lines taken from the text layer, whether OCR ran).
+pub fn detect(img: &Path, dir: &Path, cache: &EngineCache, mode: &str) -> Result<(Vec<Block>, usize, bool), String> {
+    let layer = if mode == "ocr" { None } else { load_layer(img) };
+    match layer {
+        Some(l) => ocr_hybrid(img, dir, cache, &l, mode != "text"),
+        None if mode == "text" => Err("Selectable-text mode only works on PDFs. Choose another detection method for images.".into()),
+        None => ocr(img, dir, cache).map(|b| (b, 0, true)),
+    }
 }
 
 // Merge neighbouring lines into paragraph blocks. Lines only merge when they share
@@ -674,5 +689,11 @@ mod tests {
         // two columns (gap of 100) on one row, plus a second row below the first
         let m = merge_layer_lines(&[ll(50.0, 50.0, 100.0, "left"), ll(250.0, 50.0, 100.0, "right"), ll(50.0, 80.0, 100.0, "below")]);
         assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn text_mode_needs_a_text_layer() {
+        let r = detect(Path::new("/nonexistent/page.png"), Path::new("/nonexistent"), &EngineCache::default(), "text");
+        assert!(r.is_err());
     }
 }
