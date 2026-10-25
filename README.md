@@ -1,6 +1,6 @@
-# Layout Translator
+# Layout Translator [work in progress]
 
-Drop in an image, get it back with the text translated in the same layout. OCR is PaddleOCR (ONNX) in Rust; translation goes to any OpenAI-compatible endpoint (llama.cpp `llama-server`, or a hosted API with a key). Windows first, macOS via CI. See PLAN.md for the architecture.
+Drop in an image, get it back with the text translated in the same layout. OCR is PaddleOCR (ONNX) in Rust; translation goes to a local llama.cpp `llama-server` (base URL only, no API key or model name needed). Windows first, macOS via CI. See PLAN.md for the architecture.
 
 ## Run it (Windows)
 1. Install Rust (rustup, MSVC), Visual Studio Build Tools "Desktop development with C++", Node LTS.

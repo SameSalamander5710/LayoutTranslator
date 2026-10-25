@@ -26,6 +26,12 @@ pub struct Block {
 struct Line { b: [f32; 4], t: String, c: f32, fg: [u8; 3], bg: [u8; 3] }
 
 pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, String> {
+    let im = load_image(img).map_err(|e| e.to_string())?;
+    Ok(group(ocr_lines(&im, dir, cache)?))
+}
+
+// Runs the OCR engine on an in-memory image and returns the raw text lines (not yet grouped).
+fn ocr_lines(im: &RgbImage, dir: &Path, cache: &EngineCache) -> Result<Vec<Line>, String> {
     let p = |n: &str| dir.join(n).to_string_lossy().to_string();
     let key = dir.to_string_lossy().to_string();
     let engine = {
@@ -47,7 +53,6 @@ pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, St
             }
         }
     };
-    let im = load_image(img).map_err(|e| e.to_string())?;
     let res = engine.predict(vec![im.clone()]).map_err(|e| e.to_string())?;
     let mut lines = vec![];
     for r in &res[0].text_regions {
@@ -57,7 +62,7 @@ pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, St
             let y0 = bbox.y_min();
             let x1 = bbox.x_max();
             let y1 = bbox.y_max();
-            let (fg, bg) = box_colors(&im, x0, y0, x1 - x0, y1 - y0);
+            let (fg, bg) = box_colors(im, x0, y0, x1 - x0, y1 - y0);
             lines.push(Line {
                 b: [x0, y0, x1 - x0, y1 - y0],
                 t: t.to_string(),
@@ -67,7 +72,89 @@ pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, St
             });
         }
     }
-    Ok(group(lines))
+    Ok(lines)
+}
+
+// ---------- Hybrid run for PDFs: selectable text first, OCR only for the rest ----------
+// When a PDF is opened, each page's selectable text is saved next to its page image as
+// page-NNN.json (pixel coordinates at PDF_DPI). The OCR step reads that file if it exists.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct LayerLine { pub b: [f32; 4], pub t: String }
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayer { pub lines: Vec<LayerLine>, pub has_images: bool }
+
+/// Largest gap between two pieces of text on one line, as a multiple of the line height (a normal
+/// word space is about 0.25; table columns and page columns are further apart than this).
+const MAX_WORD_GAP: f32 = 0.9;
+
+/// Joins text pieces that sit on the same line and close together (words, font changes, etc.) into whole
+/// lines. Pieces from different columns or table cells stay apart because their gap is too large.
+fn merge_layer_lines(src: &[LayerLine]) -> Vec<LayerLine> {
+    let mut segs: Vec<&LayerLine> = src.iter().filter(|l| !l.t.trim().is_empty() && l.b[2] > 0.0 && l.b[3] > 0.0).collect();
+    segs.sort_by(|a, b| a.b[0].total_cmp(&b.b[0]));
+    let mut rows: Vec<LayerLine> = vec![];
+    for s in segs {
+        let [x, y, w, h] = s.b;
+        let k = rows.iter().rposition(|r| {
+            let [rx, ry, rw, rh] = r.b;
+            let overlap = (y + h).min(ry + rh) - y.max(ry);
+            let gap = x - (rx + rw);
+            let hh = h.max(rh);
+            overlap > 0.5 * h.min(rh) && h / rh > 0.55 && h / rh < 1.8 && gap > -0.8 * hh && gap < MAX_WORD_GAP * hh
+        });
+        match k {
+            Some(i) => {
+                let r = &mut rows[i];
+                let gap = x - (r.b[0] + r.b[2]);
+                let (nx, ny) = (r.b[0].min(x), r.b[1].min(y));
+                let (nr, nb) = ((r.b[0] + r.b[2]).max(x + w), (r.b[1] + r.b[3]).max(y + h));
+                if gap > 0.15 * h.max(r.b[3]) { r.t.push(' '); }
+                r.t.push_str(s.t.trim());
+                r.b = [nx, ny, nr - nx, nb - ny];
+            }
+            None => rows.push(LayerLine { b: s.b, t: s.t.trim().to_string() }),
+        }
+    }
+    rows
+}
+
+pub fn load_layer(page_png: &Path) -> Option<TextLayer> {
+    serde_json::from_slice(&std::fs::read(page_png.with_extension("json")).ok()?).ok()
+}
+
+// Fraction of box `a` that lies inside box `b`.
+fn overlap_frac(a: &[f32; 4], b: &[f32; 4]) -> f32 {
+    let w = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
+    let h = (a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1]);
+    if w <= 0.0 || h <= 0.0 || a[2] * a[3] <= 0.0 { 0.0 } else { w * h / (a[2] * a[3]) }
+}
+
+/// Returns (blocks, number of lines taken from the text layer, whether OCR ran).
+/// 1. Selectable text lines become blocks directly (no OCR).
+/// 2. If the page has images (or no selectable text at all), OCR runs on a copy of the page with the
+///    selectable text painted over, so only the remaining text is read. OCR lines that still fall
+///    on selectable text are dropped.
+/// 3. All lines are grouped into blocks together.
+pub fn ocr_hybrid(img: &Path, dir: &Path, cache: &EngineCache, layer: &TextLayer) -> Result<(Vec<Block>, usize, bool), String> {
+    let im = load_image(img).map_err(|e| e.to_string())?;
+    let mut lines: Vec<Line> = merge_layer_lines(&layer.lines).iter().filter(|l| !l.t.trim().is_empty() && l.b[2] >= 1.0 && l.b[3] >= 1.0).map(|l| {
+        let (fg, bg) = box_colors(&im, l.b[0], l.b[1], l.b[2], l.b[3]);
+        Line { b: l.b, t: l.t.trim().to_string(), c: 1.0, fg, bg }
+    }).collect();
+    let n_layer = lines.len();
+    let run_ocr = n_layer == 0 || layer.has_images;
+    if run_ocr {
+        let mut masked = im.clone();
+        for l in &lines {
+            let r = Rect::at(l.b[0] as i32 - 2, l.b[1] as i32 - 2).of_size(l.b[2] as u32 + 4, l.b[3] as u32 + 4);
+            draw_filled_rect_mut(&mut masked, r, Rgb(l.bg));
+        }
+        for o in ocr_lines(&masked, dir, cache)? {
+            if !lines[..n_layer].iter().any(|l| overlap_frac(&o.b, &l.b) > 0.5) { lines.push(o); }
+        }
+    }
+    Ok((group(lines), n_layer, run_ocr))
 }
 
 // Merge neighbouring lines into paragraph blocks. Lines only merge when they share
@@ -133,15 +220,14 @@ pub fn colors(img: &RgbImage, b: &mut Block) {
     (b.fg, b.bg) = box_colors(img, x, y, bw, bh);
 }
 
-// ---------- Translation: any OpenAI-compatible endpoint (llama.cpp's llama-server, or a hosted API with a key) ----------
-async fn call(texts: &[&str], target: &str, base: &str, model: &str, key: &str) -> Result<Vec<String>, String> {
+// ---------- Translation: local llama.cpp server (OpenAI-compatible endpoint, no key, any model name) ----------
+async fn call(texts: &[&str], target: &str, base: &str) -> Result<Vec<String>, String> {
     let body = serde_json::json!({
-        "model": if model.is_empty() { "default" } else { model }, "temperature": 0.2,
+        "model": "default", "temperature": 0.2,
         "messages": [
             {"role": "system", "content": format!("You are a translation engine. Translate every string in the JSON array into {target}. Return ONLY a JSON array of strings with the same length and order. Keep numbers, names and line breaks.")},
             {"role": "user", "content": serde_json::to_string(texts).unwrap()}]});
-    let mut rq = reqwest::Client::new().post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body);
-    if !key.is_empty() { rq = rq.bearer_auth(key); }
+    let rq = reqwest::Client::new().post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body);
     let r = rq.send().await.map_err(|e| format!("Cannot reach {base}: {e}"))?;
     if !r.status().is_success() { return Err(format!("Endpoint returned HTTP {}", r.status())); }
     let j: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
@@ -150,13 +236,29 @@ async fn call(texts: &[&str], target: &str, base: &str, model: &str, key: &str) 
     serde_json::from_str::<Vec<String>>(c).map_err(|e| format!("Model did not return a JSON array: {e}"))
 }
 
-pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, model: &str, key: &str) -> Result<(), String> {
+/// Checks that the server answers at `base` (e.g. http://127.0.0.1:8080/v1). Returns a short status line.
+pub async fn test_connection(base: &str) -> Result<String, String> {
+    let base = base.trim().trim_end_matches('/');
+    if !(base.starts_with("http://") || base.starts_with("https://")) { return Err("URL must start with http:// or https://".into()); }
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
+    let r = client.get(format!("{base}/models")).send().await.map_err(|e| {
+        if e.is_timeout() { "Timed out after 5 seconds".to_string() }
+        else if e.is_connect() { format!("Cannot connect to {base}. Is llama-server running?") }
+        else { e.to_string() }
+    })?;
+    if !r.status().is_success() { return Err(format!("Server answered HTTP {}. Check that the URL ends with /v1", r.status())); }
+    let j: serde_json::Value = r.json().await.unwrap_or_default();
+    let id = j["data"][0]["id"].as_str().or(j["models"][0]["model"].as_str()).or(j["models"][0]["name"].as_str());
+    Ok(match id { Some(id) => format!("Connected. Model: {id}"), None => "Connected.".to_string() })
+}
+
+pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str) -> Result<(), String> {
     let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
-    let out = match call(&texts, target, base, model, key).await {
+    let out = match call(&texts, target, base).await {
         Ok(v) if v.len() == texts.len() => v,
         _ => { // batch failed or lost lines: retry one block at a time
             let mut v = vec![];
-            for t in &texts { v.push(call(&[t], target, base, model, key).await?.into_iter().next().unwrap_or_default()); }
+            for t in &texts { v.push(call(&[t], target, base).await?.into_iter().next().unwrap_or_default()); }
             v
         }
     };
@@ -334,6 +436,48 @@ fn erase(im: &mut image::RgbaImage, b: &Block) {
 }
 
 // ---------- PDF in (pdfium) ----------
+// Selectable text lines of a page, converted from PDF points (origin bottom-left) to page-image pixels.
+// TODO(local AI): rotated pages (/Rotate) and non-zero crop boxes are not handled yet.
+fn page_text_layer(page: &pdfium_render::prelude::PdfPage, scale: f32) -> TextLayer {
+    use pdfium_render::prelude::*;
+    // pdfium's ready-made text "segments" are often one word each, and can even join words from two
+    // different lines. So read single characters instead and build the runs ourselves: consecutive
+    // characters stay in one run while they share a baseline and sit close together.
+    struct Run { l: f32, b: f32, r: f32, t: f32, s: String } // PDF points, y up
+    fn flush(cur: &mut Option<Run>, out: &mut Vec<Run>) { if let Some(r) = cur.take() { out.push(r); } }
+    let page_h = page.height().value;
+    let mut runs: Vec<Run> = vec![];
+    if let Ok(text) = page.text() {
+        let mut cur: Option<Run> = None;
+        for ch in text.chars().iter() {
+            let Some(c) = ch.unicode_char() else { continue };
+            if c == '\r' || c == '\n' { flush(&mut cur, &mut runs); continue; }
+            if c.is_whitespace() { if let Some(u) = cur.as_mut() { if !u.s.ends_with(' ') { u.s.push(' '); } } continue; }
+            if c.is_control() { continue; }
+            let Ok(r) = ch.loose_bounds() else { continue };
+            let (l, rt, tp, bt) = (r.left().value, r.right().value, r.top().value, r.bottom().value);
+            let joins = cur.as_ref().map_or(false, |u| {
+                let h = u.t - u.b;
+                (tp.min(u.t) - bt.max(u.b)) > 0.5 * (tp - bt).min(h) && l - u.r > -0.8 * h && l - u.r < MAX_WORD_GAP * h
+            });
+            if joins {
+                let u = cur.as_mut().unwrap();
+                if l - u.r > 0.15 * (u.t - u.b) && !u.s.ends_with(' ') { u.s.push(' '); }
+                u.l = u.l.min(l); u.r = u.r.max(rt); u.b = u.b.min(bt); u.t = u.t.max(tp); u.s.push(c);
+            } else {
+                flush(&mut cur, &mut runs);
+                cur = Some(Run { l, b: bt, r: rt, t: tp, s: c.to_string() });
+            }
+        }
+        flush(&mut cur, &mut runs);
+    }
+    let lines = runs.into_iter().filter(|u| !u.s.trim().is_empty())
+        .map(|u| LayerLine { b: [u.l * scale, (page_h - u.t) * scale, (u.r - u.l) * scale, (u.t - u.b) * scale], t: u.s.trim().to_string() })
+        .collect();
+    let has_images = page.objects().iter().any(|o| matches!(o.object_type(), PdfPageObjectType::Image | PdfPageObjectType::XObjectForm));
+    TextLayer { lines, has_images }
+}
+
 pub fn rasterise_pdf(pdf: &Path, lib_dir: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
     use pdfium_render::prelude::*;
     let lib_name = Pdfium::pdfium_platform_library_name_at_path(lib_dir);
@@ -352,6 +496,8 @@ pub fn rasterise_pdf(pdf: &Path, lib_dir: &Path, out_dir: &Path) -> Result<Vec<S
         let img = bitmap.as_image();
         let p = out_dir.join(format!("page-{:03}.png", i + 1));
         img.save(&p).map_err(|e| e.to_string())?;
+        let layer = page_text_layer(&page, PDF_DPI / 72.0);
+        if let Ok(j) = serde_json::to_vec(&layer) { let _ = std::fs::write(p.with_extension("json"), j); }
         v.push(p.to_string_lossy().into_owned());
     }
     Ok(v)
@@ -497,5 +643,36 @@ mod tests {
             assert!(fits(&font, text, w, h, px), "{text}: chosen px {px} must fit");
             assert!(!fits(&font, text, w, h, px * 1.05), "{text}: px*1.05 must not fit, so {px} is maximal");
         }
+    }
+
+    #[test]
+    fn overlap_frac_basics() {
+        let a = [10.0, 10.0, 20.0, 10.0];
+        assert_eq!(overlap_frac(&a, &[0.0, 0.0, 100.0, 100.0]), 1.0); // fully inside
+        assert_eq!(overlap_frac(&a, &[200.0, 0.0, 10.0, 10.0]), 0.0); // apart
+        assert!((overlap_frac(&a, &[20.0, 10.0, 50.0, 10.0]) - 0.5).abs() < 1e-6); // half covered
+    }
+
+    fn ll(x: f32, y: f32, w: f32, t: &str) -> LayerLine { LayerLine { b: [x, y, w, 20.0], t: t.into() } }
+
+    #[test]
+    fn layer_words_merge_into_one_line() {
+        let m = merge_layer_lines(&[ll(100.0, 50.0, 40.0, "Hello"), ll(150.0, 52.0, 50.0, "brave"), ll(210.0, 50.0, 40.0, "world")]);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].t, "Hello brave world");
+        assert_eq!(m[0].b[0], 100.0);
+    }
+
+    #[test]
+    fn layer_pieces_without_a_gap_are_glued() {
+        let m = merge_layer_lines(&[ll(100.0, 50.0, 40.0, "Hel"), ll(140.5, 50.0, 30.0, "lo")]);
+        assert_eq!(m[0].t, "Hello");
+    }
+
+    #[test]
+    fn layer_columns_and_lines_stay_apart() {
+        // two columns (gap of 100) on one row, plus a second row below the first
+        let m = merge_layer_lines(&[ll(50.0, 50.0, 100.0, "left"), ll(250.0, 50.0, 100.0, "right"), ll(50.0, 80.0, 100.0, "below")]);
+        assert_eq!(m.len(), 3);
     }
 }

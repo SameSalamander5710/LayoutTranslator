@@ -36,6 +36,7 @@ canvas{max-width:100%;height:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);backgroun
 #log{font:12px/1.5 Consolas,monospace;color:var(--mute);max-height:130px;overflow:auto;margin-top:10px;white-space:pre-wrap}
 #blocks{max-height:640px;overflow:auto}
 .note{font-size:12px;color:var(--mute);margin-top:8px}
+.st{font-size:12px;color:var(--mute);align-self:center}.st.ok{color:var(--ok)}.st.bad{color:#b3261e}
 </style></head>
 <body>
 <header><h1>Layout Translator</h1><span>Local OCR (PaddleOCR) + any OpenAI-compatible endpoint, e.g. llama.cpp</span></header>
@@ -51,8 +52,7 @@ canvas{max-width:100%;height:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);backgroun
 
   <h2 style="margin-top:18px">2. Translation endpoint</h2>
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
-  <label for="model">Model name (optional for llama.cpp)</label><input id="model">
-  <label for="key">API key (optional)</label><input id="key" type="password" autocomplete="off">
+  <div class="row" style="margin-top:6px"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
   <label for="tgt">Translate into</label><input id="tgt" value="English" list="langs">
   <datalist id="langs"><option>English</option><option>Spanish</option><option>French</option><option>German</option><option>Ukrainian</option><option>Japanese</option></datalist>
 
@@ -87,7 +87,7 @@ const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
 const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
 const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=u});
 const setStep=(k,st,t=st)=>{const li=$(`[data-s=${k}]`);li.className=st;li.lastChild.textContent=t};
-for(const k of ["url","model","key","tgt"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
+for(const k of ["url","tgt"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
 function render(){const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);return}
   cv.width=base.width;cv.height=base.height;cx.drawImage(base,0,0);
   if(view==="boxes")p.blocks.forEach(b=>{cx.strokeStyle="#1f9d6b";cx.lineWidth=Math.max(1.5,cv.width/600);cx.strokeRect(...b.bbox);
@@ -104,9 +104,10 @@ async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …")
   isPdf=/\.pdf$/i.test(path);$('#save').disabled=true;$('#run').disabled=false;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
 async function typeset(i){const p=pg[i];p.out=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null}))}
 async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
-  if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true}
+  if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true;
+    if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`)}
   setStep('ocr','done',"done");setStep('tr','run',lab);
-  p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,model:$('#model').value,apiKey:$('#key').value});
+  p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value});
   setStep('tr','done',"done");setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
 $('#run').onclick=async()=>{$('#run').disabled=true;
   for(let i=0;i<pg.length;i++){try{log(`Page ${i+1}/${pg.length} …`);await doPage(i)}catch(e){log("Error: "+e);$('#run').disabled=false;return}}
@@ -115,6 +116,10 @@ $('#save').onclick=async()=>{const pdf=isPdf;
   const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
   try{pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o});log("Saved "+o)}catch(e){log("Error: "+e)}};
 $('#browse').onclick=async()=>{const p=await T.dialog.open({filters:[{name:"Images and PDF",extensions:["png","jpg","jpeg","webp","bmp","pdf"]}]});if(p)setDoc(p)};
+const setConn=(c,t)=>{const e=$('#conn');e.className="st "+c;e.textContent=t};
+$('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;
+  try{setConn("ok","✓ "+await inv('test_connection',{endpoint:$('#url').value}))}catch(e){setConn("bad","✗ "+e)}$('#test').disabled=false};
+$('#url').addEventListener('input',()=>setConn("","Not tested"));
 $('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
 $('#prev').onclick=()=>go(cur-1);$('#next').onclick=()=>go(cur+1);
 $$('.view button').forEach(b=>b.onclick=()=>setView(b.dataset.v));

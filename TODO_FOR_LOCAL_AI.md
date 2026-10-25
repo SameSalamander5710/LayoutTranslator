@@ -28,7 +28,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [x] D1. Rasterisation uses pdfium at 200 DPI; loads from resources/pdfium with fallback. Needs runtime tests.
 - [x] D2. Using pdfium-render 0.8; writer unchanged - needs validation.
 - [ ] D3. Output PDFs are page images (text not selectable) and can be large; try lower JPEG quality or an optional "text layer" mode.
-- [ ] D4. PDFs with a real text layer are OCR'd like scans. Add the shortcut from PLAN.md (read text runs and boxes with pdfium, skip OCR).
+- [x] D4. Hybrid run: selectable PDF text is read with pdfium first, OCR only covers the rest (and is skipped on pages with no images). Still to do: rotated pages and non-zero crop boxes (see `page_text_layer`), and test on real-world PDFs (multi-column, tables, Type 3 fonts, text split into one segment per word).
 - [ ] D5. Add a cancel button and a progress bar for long documents.
 
 ## E. Inpainting
@@ -43,8 +43,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [ ] F4. Local models sometimes break the JSON-array reply (extra prose, reasoning tags). Harden the parser in `call()` and consider constrained output (llama.cpp grammar or `response_format`).
 
 ## G. Translation endpoint
-- [ ] G1. Add a "Test connection" button and clear error messages for unreachable or unauthorised endpoints.
-- [ ] G2. The API key is saved in the webview `localStorage` as plain text. Move it to the OS keychain, or at least warn the user.
+- [x] G1. Test connection button and status field added (`test_connection`, 5 s timeout, checks `GET {base}/models`).
 - [ ] G3. `"csp": null` in `tauri.conf.json` is a development setting. Write a strict CSP for release.
 - [ ] G4. Large pages: split block lists into batches so prompts fit the model's context.
 

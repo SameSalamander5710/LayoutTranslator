@@ -37,7 +37,7 @@ fn open_models_dir(app: AppHandle) -> Result<(), String> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Page { width: u32, height: u32, original: String, blocks: Vec<Block> }
+struct Page { width: u32, height: u32, original: String, blocks: Vec<Block>, layer_lines: usize, ocr_ran: bool }
 
 #[tauri::command]
 async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: String, lang: String) -> Result<Page, String> {
@@ -46,7 +46,12 @@ async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: St
     let p2 = p.clone();
     let dir2 = dir.clone();
     let cache = Arc::new(EngineCache::default());
-    let mut blocks = tauri::async_runtime::spawn_blocking(move || pipeline::ocr(&p2, &dir2, &cache))
+    // PDF pages carry their selectable text (saved when the PDF was opened): use it first, OCR the rest.
+    let layer = pipeline::load_layer(&p);
+    let (mut blocks, layer_lines, ocr_ran) = tauri::async_runtime::spawn_blocking(move || match layer {
+        Some(l) => pipeline::ocr_hybrid(&p2, &dir2, &cache, &l),
+        None => pipeline::ocr(&p2, &dir2, &cache).map(|b| (b, 0, true)),
+    })
         .await
         .map_err(|e| e.to_string())??;
     let im = image::open(&p).map_err(|e| e.to_string())?;
@@ -55,15 +60,17 @@ async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: St
         b.id = i as u32 + 1;
         pipeline::colors(&rgb, b);
     }
-    Ok(Page { width: im.width(), height: im.height(), original: pipeline::png_data_url(&im)?, blocks })
+    Ok(Page { width: im.width(), height: im.height(), original: pipeline::png_data_url(&im)?, blocks, layer_lines, ocr_ran })
 }
 
 #[tauri::command]
-async fn translate_blocks(mut blocks: Vec<Block>, target: String, endpoint: String, model: String, api_key: String)
-    -> Result<Vec<Block>, String> {
-    pipeline::translate(&mut blocks, &target, &endpoint, &model, &api_key).await?;
+async fn translate_blocks(mut blocks: Vec<Block>, target: String, endpoint: String) -> Result<Vec<Block>, String> {
+    pipeline::translate(&mut blocks, &target, &endpoint).await?;
     Ok(blocks)
 }
+
+#[tauri::command]
+async fn test_connection(endpoint: String) -> Result<String, String> { pipeline::test_connection(&endpoint).await }
 
 // Renders the translated page. Returns a PNG data URL for preview; also writes `out` when given.
 fn pick_font(app: &AppHandle, lang: &str) -> std::path::PathBuf {
@@ -124,7 +131,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineCache::default())
-        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, render_page, open_document, preview, export_pdf])
+        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, test_connection, render_page, open_document, preview, export_pdf])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }

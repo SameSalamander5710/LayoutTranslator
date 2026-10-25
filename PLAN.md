@@ -62,7 +62,7 @@ TextBlock { id, page, bbox:[x,y,w,h], text, translated?, conf, fontPx, weight, f
 - Typeset: one bundled font (Noto Sans) drawn with `ab_glyph`/`imageproc`, shrink-to-fit inside the original box. Known gaps: CJK/Arabic fonts, no shaping, no wrapping without spaces.
 
 ### Translation (implemented, first draft)
-One engine: any OpenAI-compatible `/v1/chat/completions` endpoint, meaning llama.cpp's `llama-server` locally or a hosted API with an optional key. The prompt sends a JSON array of block texts and requires a JSON array back; if the count differs, blocks are retried one by one. Google Translate's unofficial endpoint was dropped (undocumented, rate-limited, grey area). Later: bundle `llama-server` as a Tauri sidecar so users need nothing running; add an engine trait if more providers are wanted.
+One engine: any OpenAI-compatible `/v1/chat/completions` endpoint, meaning a local llama.cpp `llama-server` (base URL only; no API key or model name; a Test connection button checks `/models`). The prompt sends a JSON array of block texts and requires a JSON array back; if the count differs, blocks are retried one by one. Google Translate's unofficial endpoint was dropped (undocumented, rate-limited, grey area). Later: bundle `llama-server` as a Tauri sidecar so users need nothing running; add an engine trait if more providers are wanted.
 
 ### Models and size
 Ship small default OCR models in the installer (tens of MB). Extra languages and the LLM are downloaded on demand into the app data directory with SHA-256 verification (RustLens already does this pattern).
