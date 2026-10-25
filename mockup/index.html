@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Layout Translator – mockup</title>
+<style>
+:root{--bg:#e9edf1;--panel:#fff;--ink:#14212b;--mute:#5d6c78;--line:#cfd7de;--acc:#1f5f8b;--accink:#fff;--ok:#2b7a4b;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#10171d;--panel:#18222b;--ink:#e6edf2;--mute:#92a1ad;--line:#2b3945;--acc:#6ab0e0;--accink:#08202f;--ok:#6fcf97}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+header{padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+h1{font-size:17px;margin:0}header span{color:var(--mute);font-size:13px}
+main{display:grid;grid-template-columns:290px minmax(0,1fr) 320px;gap:14px;padding:14px;align-items:start}
+@media(max-width:1000px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+h2{font-size:14px;margin:0 0 10px}
+label{display:block;font-size:12px;color:var(--mute);margin:10px 0 3px}
+select,input,textarea,button{font:inherit;color:inherit}
+select,input,textarea{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+button{padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);cursor:pointer}
+button.p{background:var(--acc);color:var(--accink);border-color:var(--acc);font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.steps{list-style:none;margin:0;padding:0}
+.steps li{padding:6px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.steps li.done{color:var(--ok)}.steps li.run{color:var(--acc);font-weight:600}
+.drop{border:2px dashed var(--line);border-radius:8px;padding:14px;text-align:center;color:var(--mute);margin-bottom:10px}
+.drop.on{border-color:var(--acc)}
+.view{display:flex;gap:6px;margin-bottom:10px}
+.view button[aria-pressed=true]{background:var(--acc);color:var(--accink);border-color:var(--acc)}
+.stage{overflow:auto;background:var(--bg);border-radius:6px;padding:10px;text-align:center}
+canvas{max-width:100%;height:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#fff}
+.blk{border-bottom:1px solid var(--line);padding:8px 0}
+.blk small{color:var(--mute);display:block}
+.blk textarea{margin-top:4px;resize:vertical;min-height:38px}
+#log{font:12px/1.5 Consolas,monospace;color:var(--mute);max-height:130px;overflow:auto;margin-top:10px;white-space:pre-wrap}
+#blocks{max-height:640px;overflow:auto}
+.note{font-size:12px;color:var(--mute);margin-top:8px}
+</style></head>
+<body>
+<header><h1>Layout Translator</h1><span>Browser-only demo of the pipeline on a built-in sample page. The real app is in ../src and needs Tauri.</span></header>
+<main>
+<section aria-label="Controls">
+  <h2>1. Input</h2>
+  <div class="drop" id="drop">Drop an image or PDF here<br><small>(mockup runs the built-in sample page only)</small></div>
+  <div class="row" style="margin-top:0"><button id="load">Load sample page</button></div>
+
+  <h2 style="margin-top:18px">2. Translation engine</h2>
+  <label for="eng">Engine</label>
+  <select id="eng">
+    <option value="mock">Offline demo dictionary (German to English)</option>
+    <option value="llama">llama.cpp / OpenAI-compatible endpoint</option>
+  </select>
+  <div id="llamaCfg" hidden>
+    <label for="url">Endpoint</label><input id="url" value="http://127.0.0.1:8080/v1">
+    <label for="model">Model name (optional)</label><input id="model" placeholder="e.g. translategemma">
+  </div>
+  <label for="tgt">Target language</label>
+  <select id="tgt"><option>English</option><option>Spanish</option><option>French</option><option>Ukrainian</option><option>Japanese</option></select>
+
+  <h2 style="margin-top:18px">3. Pipeline</h2>
+  <ul class="steps" id="steps">
+    <li data-s="ocr"><span>Detect and read text</span><span>waiting</span></li>
+    <li data-s="tr"><span>Translate</span><span>waiting</span></li>
+    <li data-s="ty"><span>Erase and typeset</span><span>waiting</span></li>
+  </ul>
+  <div class="row"><button class="p" id="run" disabled>Run all</button><button id="save" disabled>Save PNG</button></div>
+  <div id="log" aria-live="polite"></div>
+</section>
+
+<section aria-label="Page">
+  <div class="view" role="group" aria-label="View">
+    <button data-v="orig" aria-pressed="true">Original</button>
+    <button data-v="boxes" aria-pressed="false">Detected text</button>
+    <button data-v="out" aria-pressed="false">Translated</button>
+  </div>
+  <div class="stage"><canvas id="cv" width="620" height="760"></canvas></div>
+  <p class="note">Switch to “Translated” after running. Editing a translation on the right redraws the page, so this is also the review step before export.</p>
+</section>
+
+<section aria-label="Text blocks">
+  <h2>Text blocks</h2>
+  <div id="blocks"><p class="note">Run the pipeline to see detected blocks.</p></div>
+</section>
+</main>
+
+<script>
+// ---- Data contract (mirror this struct in Rust with serde) ----
+// TextBlock { id, bbox:[x,y,w,h], text, translated, conf, fontPx, weight, bg, fg }
+const W=620,H=760,cv=document.getElementById('cv'),cx=cv.getContext('2d');
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+// Sample page: "ground truth" that a real OCR step would discover from pixels.
+const art=[["#dfe9e3",0,0,W,88],["#dde6ef",40,300,540,28]]; // page background art (colour bands)
+const SAMPLE=[
+ {id:1,bbox:[40,28,420,36],text:"Rechnung Nr. 2026-0417",fontPx:26,weight:700,bg:"#dfe9e3",fg:"#14212b"},
+ {id:2,bbox:[40,110,250,64],text:"Müller & Söhne GmbH\nHauptstraße 12\n01067 Dresden",fontPx:15,weight:400,bg:"#fbfaf8",fg:"#222"},
+ {id:3,bbox:[340,110,240,64],text:"Rechnungsdatum: 24. Oktober 2026\nFällig am: 7. November 2026",fontPx:14,weight:400,bg:"#fbfaf8",fg:"#222"},
+ {id:4,bbox:[40,210,540,56],text:"Vielen Dank für Ihren Auftrag. Wir erlauben uns, folgende Leistungen in Rechnung zu stellen.",fontPx:17,weight:400,bg:"#fbfaf8",fg:"#222"},
+ {id:5,bbox:[48,304,300,20],text:"Beschreibung",fontPx:14,weight:700,bg:"#dde6ef",fg:"#14212b"},
+ {id:6,bbox:[400,304,60,20],text:"Menge",fontPx:14,weight:700,bg:"#dde6ef",fg:"#14212b"},
+ {id:7,bbox:[480,304,96,20],text:"Preis",fontPx:14,weight:700,bg:"#dde6ef",fg:"#14212b"},
+ {id:8,bbox:[48,344,330,22],text:"Webdesign und Umsetzung",fontPx:15,weight:400,bg:"#fbfaf8",fg:"#222"},
+ {id:9,bbox:[48,384,330,22],text:"Hosting (12 Monate)",fontPx:15,weight:400,bg:"#fbfaf8",fg:"#222"},
+ {id:10,bbox:[40,470,540,60],text:"Zahlbar innerhalb von 14 Tagen ohne Abzug. Bei Fragen erreichen Sie uns jederzeit telefonisch.",fontPx:15,weight:400,bg:"#fbfaf8",fg:"#222"},
+];
+const DICT={1:"Invoice No. 2026-0417",2:"Müller & Söhne GmbH\nHauptstraße 12\n01067 Dresden",3:"Invoice date: 24 October 2026\nDue: 7 November 2026",
+4:"Thank you for your order. We hereby invoice you for the following services.",5:"Description",6:"Qty",7:"Price",8:"Web design and implementation",9:"Hosting (12 months)",
+10:"Payable within 14 days without deduction. If you have any questions, you can reach us by phone at any time."};
+let blocks=[],view="orig",stage=0; // stage: 0 empty, 1 loaded, 2 ocr, 3 translated, 4 typeset
+
+const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const font=(px,w)=>`${w} ${px}px "Segoe UI",system-ui,sans-serif`;
+
+// ---- Typesetting: shrink-to-fit inside the original bbox (port this to Rust) ----
+function wrap(text,maxW){const out=[];for(const para of text.split("\n")){let line="";for(const word of para.split(/\s+/)){const t=line?line+" "+word:word;if(cx.measureText(t).width>maxW&&line){out.push(line);line=word}else line=t}out.push(line)}return out}
+function fit(b,text){let px=b.fontPx*1.05;for(;px>=7;px-=.5){cx.font=font(px,b.weight);const ls=wrap(text,b.bbox[2]);if(ls.length*px*1.2<=b.bbox[3]+px*0.3)return{px,ls}}
+  cx.font=font(7,b.weight);return{px:7,ls:wrap(text,b.bbox[2])}}
+function drawText(b,text){const{px,ls}=fit(b,text);cx.font=font(px,b.weight);cx.fillStyle=b.fg;cx.textBaseline="top";ls.forEach((l,i)=>cx.fillText(l,b.bbox[0],b.bbox[1]+i*px*1.2))}
+
+function render(){
+  cx.fillStyle="#fbfaf8";cx.fillRect(0,0,W,H);
+  if(stage<1){cx.fillStyle="#9aa7b1";cx.font=font(16,400);cx.fillText("No page loaded",230,360);return}
+  art.forEach(([c,x,y,w,h])=>{cx.fillStyle=c;cx.fillRect(x,y,w,h)});
+  cx.fillStyle="#cfd7de";[[40,338,540],[40,378,540],[40,418,540]].forEach(([x,y,w])=>cx.fillRect(x,y+26,w,1));
+  const showOut=view==="out"&&stage>=4;
+  SAMPLE.forEach(s=>{const b=blocks.find(k=>k.id===s.id)||s;
+    if(showOut){cx.fillStyle=b.bg;cx.fillRect(...b.bbox.map((v,i)=>i<2?v-2:v+4));drawText(b,b.translated||b.text)}
+    else drawText(s,s.text)});
+  if(view==="boxes"&&stage>=2){blocks.forEach(b=>{cx.strokeStyle="#1f9d6b";cx.lineWidth=1.5;cx.strokeRect(...b.bbox);cx.fillStyle="#1f9d6b";cx.font=font(10,700);cx.fillText(b.id+" · "+Math.round(b.conf*100)+"%",b.bbox[0],b.bbox[1]-12)})}
+}
+
+function setStep(k,state){const li=$(`[data-s=${k}]`);li.className=state==="done"?"done":state==="run"?"run":"";li.lastChild.textContent=state}
+function setView(v){view=v;$$('.view button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v));render()}
+function listBlocks(){const box=$('#blocks');box.innerHTML="";blocks.forEach(b=>{const d=document.createElement('div');d.className="blk";
+  d.innerHTML=`<small>#${b.id} · conf ${Math.round(b.conf*100)}% · ${b.fontPx}px</small><div></div>`;d.children[1].textContent=b.text;
+  if(b.translated!=null){const t=document.createElement('textarea');t.value=b.translated;t.setAttribute('aria-label','Translation of block '+b.id);
+    t.oninput=()=>{b.translated=t.value;render()};d.appendChild(t)}box.appendChild(d)})}
+
+// ---- Pipeline stages. In the Tauri app, replace each body with invoke('run_ocr'|'translate_blocks'|'render_page', ...) ----
+async function ocr(){setStep('ocr','run');log("OCR: detecting text regions (PP-OCR det) …");await sleep(600);log("OCR: recognising lines (PP-OCR rec) …");await sleep(600);
+  log("Layout: merging lines into paragraph blocks …");await sleep(300);
+  blocks=SAMPLE.map(s=>({...s,conf:.9+Math.random()*.09,translated:null}));stage=2;setStep('ocr','done');setView('boxes');listBlocks()}
+async function translate(){setStep('tr','run');const eng=$('#eng').value,tgt=$('#tgt').value;let out=null;
+  if(eng==="llama"){try{log("Translate: calling "+$('#url').value+" …");out=await viaLlama(tgt)}catch(e){log("Endpoint failed ("+e.message+"). Falling back to demo dictionary.")}}
+  if(!out){if(tgt!=="English")log("Demo dictionary only supports English output.");await sleep(500);out=blocks.map(b=>DICT[b.id])}
+  blocks.forEach((b,i)=>b.translated=out[i]);stage=3;setStep('tr','done');log("Translate: "+blocks.length+" blocks done.");listBlocks()}
+async function viaLlama(tgt){const r=await fetch($('#url').value.replace(/\/$/,"")+"/chat/completions",{method:"POST",headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({model:$('#model').value||"default",temperature:.2,messages:[
+  {role:"system",content:`You are a translation engine. Translate each string in the JSON array to ${tgt}. Return ONLY a JSON array of strings, same length and order, keep line breaks (\\n).`},
+  {role:"user",content:JSON.stringify(blocks.map(b=>b.text))}]})});
+  if(!r.ok)throw new Error("HTTP "+r.status);const j=await r.json();const t=j.choices[0].message.content.replace(/^```(?:json)?|```$/g,"").trim();
+  const a=JSON.parse(t);if(!Array.isArray(a)||a.length!==blocks.length)throw new Error("bad shape");return a}
+async function typeset(){setStep('ty','run');log("Render: erasing source text (fill with sampled background) …");await sleep(300);
+  log("Render: fitting translated text into original boxes …");await sleep(300);stage=4;setStep('ty','done');setView('out');$('#save').disabled=false;log("Done.")}
+
+$('#load').onclick=()=>{stage=1;blocks=[];$('#log').textContent="";$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
+  $('#blocks').innerHTML='<p class="note">Run the pipeline to see detected blocks.</p>';$('#save').disabled=true;$('#run').disabled=false;setView('orig');log("Loaded sample page (page 1 of 1).")};
+$('#run').onclick=async()=>{$('#run').disabled=true;if(stage<2)await ocr();await translate();await typeset();$('#run').disabled=false};
+$('#save').onclick=()=>{cv.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download="translated-page-1.png";a.click()})};
+$('#eng').onchange=e=>$('#llamaCfg').hidden=e.target.value!=="llama";
+$$('.view button').forEach(b=>b.onclick=()=>setView(b.dataset.v));
+const dz=$('#drop');["dragover","dragenter"].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.classList.add('on')}));
+["dragleave","drop"].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.classList.remove('on')}));
+dz.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];log(f?`Received "${f.name}". The real app sends this path to the Rust core; the mockup only runs the sample.`:"No file received.")});
+render();
+</script>
+</body></html>

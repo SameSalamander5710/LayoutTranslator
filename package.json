@@ -1,0 +1,3 @@
+{ "name": "layout-translator", "private": true, "version": "0.1.0",
+  "scripts": { "tauri": "tauri", "models": "node scripts/fetch-models.mjs" },
+  "devDependencies": { "@tauri-apps/cli": "^2" } }

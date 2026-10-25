@@ -1,0 +1,23 @@
+[package]
+name = "layout-translator"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+oar-ocr = "0.7"          # PaddleOCR via ONNX Runtime. Check crates.io for the newest version and its feature flags.
+image = "0.25"
+imageproc = "0.25"
+ab_glyph = "0.2"
+base64 = "0.22"
+pdfium-render = "0.8"   # binds to a pdfium library shipped in resources/pdfium
+
+[profile.dev.package."*"]
+opt-level = 3            # OCR is unusably slow at opt-level 0

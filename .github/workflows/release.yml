@@ -1,0 +1,59 @@
+# Builds Windows + macOS installers and attaches them to a DRAFT GitHub release.
+# Trigger: push a tag like v0.1.0 (git tag v0.1.0 && git push --tags), or run manually.
+# Needs: a Tauri v2 project in the repo root, and
+# Settings > Actions > General > Workflow permissions = "Read and write".
+# Installers are UNSIGNED until you add signing secrets (see PLAN.md section 6).
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+          - platform: macos-latest          # Apple Silicon
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-13              # Intel (verify this runner label is still available)
+            args: '--target x86_64-apple-darwin'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      # Download third-party runtime files (pdfium, ONNX Runtime, OCR models, fonts)
+      # with a script you add later, e.g. scripts/fetch-assets.mjs, then reference
+      # them under "bundle.resources" in src-tauri/tauri.conf.json.
+      - run: npm run models
+
+      - run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional macOS signing/notarization secrets go here later.
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Layout Translator ${{ github.ref_name }}'
+          releaseBody: 'Unsigned preview build. On Windows choose "More info > Run anyway". On macOS right-click the app > Open.'
+          releaseDraft: true
+          prerelease: true
+          args: ${{ matrix.args }}

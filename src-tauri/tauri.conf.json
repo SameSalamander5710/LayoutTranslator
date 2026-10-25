@@ -1,0 +1,46 @@
+{
+  "productName": "Layout Translator",
+  "version": "0.1.0",
+  "identifier": "com.example.layouttranslator",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Layout Translator",
+        "width": 1280,
+        "height": 860
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "dmg",
+      "app"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/models/": "models/",
+      "resources/fonts/": "fonts/",
+      "resources/pdfium/": "pdfium/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

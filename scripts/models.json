@@ -1,0 +1,7 @@
+{
+  "fonts": { "NotoSans-Regular.ttf": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf" },
+  "models": {
+    "en": { "det.onnx": "", "rec.onnx": "", "dict.txt": "" }
+  },
+  "_help": "Fill the empty model URLs with the PP-OCRv5 mobile detection model, the English recognition model and its dictionary (as ONNX). See docs/models.md in github.com/aisinker/oar-ocr for download links."
+}

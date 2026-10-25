@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Layout Translator – mockup</title>
+<style>
+:root{--bg:#e9edf1;--panel:#fff;--ink:#14212b;--mute:#5d6c78;--line:#cfd7de;--acc:#1f5f8b;--accink:#fff;--ok:#2b7a4b;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#10171d;--panel:#18222b;--ink:#e6edf2;--mute:#92a1ad;--line:#2b3945;--acc:#6ab0e0;--accink:#08202f;--ok:#6fcf97}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+header{padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+h1{font-size:17px;margin:0}header span{color:var(--mute);font-size:13px}
+main{display:grid;grid-template-columns:290px minmax(0,1fr) 320px;gap:14px;padding:14px;align-items:start}
+@media(max-width:1000px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+h2{font-size:14px;margin:0 0 10px}
+label{display:block;font-size:12px;color:var(--mute);margin:10px 0 3px}
+select,input,textarea,button{font:inherit;color:inherit}
+select,input,textarea{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+button{padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);cursor:pointer}
+button.p{background:var(--acc);color:var(--accink);border-color:var(--acc);font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.steps{list-style:none;margin:0;padding:0}
+.steps li{padding:6px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.steps li.done{color:var(--ok)}.steps li.run{color:var(--acc);font-weight:600}
+.drop{border:2px dashed var(--line);border-radius:8px;padding:14px;text-align:center;color:var(--mute);margin-bottom:10px}
+.drop.on{border-color:var(--acc)}
+.view{display:flex;gap:6px;margin-bottom:10px}
+.view button[aria-pressed=true]{background:var(--acc);color:var(--accink);border-color:var(--acc)}
+.stage{overflow:auto;background:var(--bg);border-radius:6px;padding:10px;text-align:center}
+canvas{max-width:100%;height:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#fff}
+.blk{border-bottom:1px solid var(--line);padding:8px 0}
+.blk small{color:var(--mute);display:block}
+.blk textarea{margin-top:4px;resize:vertical;min-height:38px}
+#log{font:12px/1.5 Consolas,monospace;color:var(--mute);max-height:130px;overflow:auto;margin-top:10px;white-space:pre-wrap}
+#blocks{max-height:640px;overflow:auto}
+.note{font-size:12px;color:var(--mute);margin-top:8px}
+</style></head>
+<body>
+<header><h1>Layout Translator</h1><span>Local OCR (PaddleOCR) + any OpenAI-compatible endpoint, e.g. llama.cpp</span></header>
+<main>
+<section aria-label="Controls">
+  <h2>1. Input</h2>
+  <div class="drop" id="drop">Drop an image or PDF here<br><small>PNG, JPG, WebP, BMP, PDF</small></div>
+  <div class="row" style="margin-top:0"><button id="browse">Browse…</button></div>
+  <label for="lang">Text language in the image</label>
+  <select id="lang"></select>
+  <div class="row" style="margin-top:6px"><button id="mdir">Open models folder</button></div>
+  <p class="note">To add a language, put a folder named after it (for example <b>models/fr</b>) in that folder with det.onnx, rec.onnx and dict.txt, then restart the app.</p>
+
+  <h2 style="margin-top:18px">2. Translation endpoint</h2>
+  <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
+  <label for="model">Model name (optional for llama.cpp)</label><input id="model">
+  <label for="key">API key (optional)</label><input id="key" type="password" autocomplete="off">
+  <label for="tgt">Translate into</label><input id="tgt" value="English" list="langs">
+  <datalist id="langs"><option>English</option><option>Spanish</option><option>French</option><option>German</option><option>Ukrainian</option><option>Japanese</option></datalist>
+
+  <h2 style="margin-top:18px">3. Pipeline</h2>
+  <ul class="steps" id="steps">
+    <li data-s="ocr"><span>Detect and read text</span><span>waiting</span></li>
+    <li data-s="tr"><span>Translate</span><span>waiting</span></li>
+    <li data-s="ty"><span>Erase and typeset</span><span>waiting</span></li>
+  </ul>
+  <div class="row"><button class="p" id="run" disabled>Run all</button><button id="save" disabled>Save PNG</button></div>
+  <div id="log" aria-live="polite"></div>
+</section>
+<section aria-label="Page">
+  <div class="view" role="group" aria-label="View">
+    <button data-v="orig" aria-pressed="true">Original</button>
+    <button data-v="boxes" aria-pressed="false">Detected text</button>
+    <button data-v="out" aria-pressed="false">Translated</button>
+  </div>
+  <div class="row" style="margin:0 0 10px"><button id="prev" aria-label="Previous page">◀</button><span id="pn" style="align-self:center">–</span><button id="next" aria-label="Next page">▶</button></div>
+  <div class="stage"><canvas id="cv" width="620" height="760"></canvas></div>
+  <p class="note">Edit any translation on the right; the page re-renders.</p>
+</section>
+<section aria-label="Text blocks"><h2>Text blocks</h2><div id="blocks"><p class="note">Run the pipeline to see detected blocks.</p></div></section>
+</main>
+<script>(function(){
+if(!window.__TAURI__){document.body.insertAdjacentHTML('afterbegin','<p role="alert" style="margin:0;padding:10px 20px;background:#b3261e;color:#fff">This page only works inside the Layout Translator desktop app (Tauri). To preview the interface in a browser or on a phone, open mockup/index.html instead.</p>');document.querySelectorAll('button,input,select').forEach(e=>e.disabled=true);return}
+
+const T=window.__TAURI__,inv=(c,a)=>T.core.invoke(c,a),$=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const cv=$('#cv'),cx=cv.getContext('2d');
+let pg=[],cur=0,isPdf=false,view="orig",timer=null;
+const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
+const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
+const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=u});
+const setStep=(k,st,t=st)=>{const li=$(`[data-s=${k}]`);li.className=st;li.lastChild.textContent=t};
+for(const k of ["url","model","key","tgt"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
+function render(){const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);return}
+  cv.width=base.width;cv.height=base.height;cx.drawImage(base,0,0);
+  if(view==="boxes")p.blocks.forEach(b=>{cx.strokeStyle="#1f9d6b";cx.lineWidth=Math.max(1.5,cv.width/600);cx.strokeRect(...b.bbox);
+    cx.fillStyle="#1f9d6b";cx.font=`bold ${Math.max(11,cv.width/60)}px sans-serif`;cx.fillText(b.id+" · "+Math.round(b.conf*100)+"%",b.bbox[0],b.bbox[1]-4)})}
+function setView(v){view=v;$$('.view button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v));render()}
+function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":'<p class="note">Run the pipeline to see detected blocks.</p>';
+  bl.forEach(b=>{const d=document.createElement('div');d.className="blk";d.innerHTML=`<small>#${b.id} · conf ${Math.round(b.conf*100)}%</small><div></div>`;d.children[1].textContent=b.text;
+  if(b.translated!=null){const t=document.createElement('textarea');t.value=b.translated;t.setAttribute('aria-label','Translation of block '+b.id);
+    t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{await typeset(i);if(i===cur)setView('out')},400)};d.appendChild(t)}box.appendChild(d)})}
+async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));const p=P();if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}));
+  $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";render();list()}
+async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
+  try{pg=(await inv('open_document',{path})).map(p=>({path:p,blocks:[],orig:null,out:null,ocr:false}))}catch(e){return log("Error: "+e)}
+  isPdf=/\.pdf$/i.test(path);$('#save').disabled=true;$('#run').disabled=false;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
+async function typeset(i){const p=pg[i];p.out=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null}))}
+async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
+  if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true}
+  setStep('ocr','done',"done");setStep('tr','run',lab);
+  p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,model:$('#model').value,apiKey:$('#key').value});
+  setStep('tr','done',"done");setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
+$('#run').onclick=async()=>{$('#run').disabled=true;
+  for(let i=0;i<pg.length;i++){try{log(`Page ${i+1}/${pg.length} …`);await doPage(i)}catch(e){log("Error: "+e);$('#run').disabled=false;return}}
+  $('#save').disabled=false;$('#run').disabled=false;log("Done.")};
+$('#save').onclick=async()=>{const pdf=isPdf;
+  const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
+  try{pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o});log("Saved "+o)}catch(e){log("Error: "+e)}};
+$('#browse').onclick=async()=>{const p=await T.dialog.open({filters:[{name:"Images and PDF",extensions:["png","jpg","jpeg","webp","bmp","pdf"]}]});if(p)setDoc(p)};
+$('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
+$('#prev').onclick=()=>go(cur-1);$('#next').onclick=()=>go(cur+1);
+$$('.view button').forEach(b=>b.onclick=()=>setView(b.dataset.v));
+T.webview.getCurrentWebview().onDragDropEvent(e=>{const d=e.payload;$('#drop').classList.toggle('on',d.type==='over'||d.type==='enter');if(d.type==='drop'&&d.paths[0])setDoc(d.paths[0])});
+inv('list_languages').then(ls=>{const sel=$('#lang');ls.forEach(l=>sel.add(new Option(l,l)));if(!ls.length)log("No OCR models found. Run: npm run models")});
+})();
+</script>
+</body></html>
