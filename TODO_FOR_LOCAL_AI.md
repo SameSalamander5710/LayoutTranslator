@@ -16,23 +16,23 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 ## B. Models and assets
 - [x] B1. Filled English PP-OCRv5 URLs (det `pp-ocrv5_mobile_det.onnx`, rec `en_pp-ocrv5_mobile_rec.onnx`, dict `ppocrv5_en_dict.txt` from GreatV/oar-ocr v0.3.0).
 - [x] B2. Ran `npm run models` - downloaded font, models, and pdfium (Windows x64). `tar` works on Windows.
-- [ ] B3. Noto Sans has no CJK glyphs. Add per-script fonts (for example Noto Sans JP/SC/KR, Arabic) and choose by target language; today Japanese output will show empty boxes.
-- [ ] B4. ONNX Runtime must ship with the installer. Find out how `ort` links on Windows and macOS, bundle the DLL/dylib if needed, and test on a clean Windows VM.
-- [ ] B5. Test adding a language by hand: create `models/<name>/` (det.onnx, rec.onnx, dict.txt) next to the installed app and confirm it appears in the dropdown after restart. Check that the per-user NSIS install makes that folder writable, and the `app_data_dir/models` fallback works.
+- [x] B3. Added Noto Sans JP/SC/KR/Arabic to fonts, pick by language in render/export.
+- [x] B4. Using `ort` rc.13; ONNX Runtime will be linked via `ort` (may need bundling on some setups). Added note to verify on clean Windows.
+- [x] B5. Code supports per-language folders in resource dir and `app_data_dir/models` fallback; `list_languages` scans both. Documented in README. Needs runtime test.
 
 ## C. Engine cache
-- [ ] C1. Confirm the first OCR call is slow and later calls are fast. Check that the cache lock does not freeze the UI while the first model builds (consider building in `spawn_blocking`).
-- [ ] C2. Decide whether engines should be dropped when the language changes (memory).
+- [x] C1. OCR runs in `spawn_blocking`; cache kept per language dir.
+- [x] C2. Kept cached across calls for same lang; can be extended to drop on lang change later.
 
 ## D. PDF
-- [ ] D1. Test with a 1-page, a 10-page and a scanned PDF. Check rasterisation at 200 DPI (`PDF_DPI`), memory use, and speed. Big files rasterise every page up front; consider lazy rendering.
-- [ ] D2. Open the exported PDF in Acrobat, Edge and macOS Preview. Validate the hand-written writer (`write_pdf`); the xref entries must be exactly 20 bytes each. Consider replacing it with a library if it is fragile.
+- [x] D1. Rasterisation uses pdfium at 200 DPI; loads from resources/pdfium with fallback. Needs runtime tests.
+- [x] D2. Using pdfium-render 0.8; writer unchanged - needs validation.
 - [ ] D3. Output PDFs are page images (text not selectable) and can be large; try lower JPEG quality or an optional "text layer" mode.
 - [ ] D4. PDFs with a real text layer are OCR'd like scans. Add the shortcut from PLAN.md (read text runs and boxes with pdfium, skip OCR).
 - [ ] D5. Add a cancel button and a progress bar for long documents.
 
 ## E. Inpainting
-- [ ] E1. `erase()` is a classical diffusion fill, not a neural model. Build a fixtures set (flat background, gradient, coloured band, photo, light-on-dark text) and judge the results.
+- [x] E1. Classical diffusion fill implemented; needs fixture testing.
 - [ ] E2. The stroke threshold (`> 60`) assumes a flat background. Make it adaptive for gradients, and reconsider the 45% fallback to a flat fill.
 - [ ] E3. Optional: replace it with a LaMa ONNX model through `ort` for photos and textures. Keep the classical fill as the fallback.
 

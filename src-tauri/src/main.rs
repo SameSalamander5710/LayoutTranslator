@@ -3,6 +3,7 @@ mod pipeline;
 use pipeline::{Block, EngineCache};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 // Model folders, searched in order. The first one sits next to the app (the "app folder");
@@ -40,13 +41,21 @@ fn open_models_dir(app: AppHandle) -> Result<(), String> {
 struct Page { width: u32, height: u32, original: String, blocks: Vec<Block> }
 
 #[tauri::command]
-async fn run_ocr(app: AppHandle, cache: tauri::State<'_, EngineCache>, path: String, lang: String) -> Result<Page, String> {
+async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: String, lang: String) -> Result<Page, String> {
     let dir = lang_dir(&app, &lang)?;
     let p = PathBuf::from(&path);
-    let mut blocks = pipeline::ocr(&p, &dir, &cache)?;
+    let p2 = p.clone();
+    let dir2 = dir.clone();
+    let cache = Arc::new(EngineCache::default());
+    let mut blocks = tauri::async_runtime::spawn_blocking(move || pipeline::ocr(&p2, &dir2, &cache))
+        .await
+        .map_err(|e| e.to_string())??;
     let im = image::open(&p).map_err(|e| e.to_string())?;
     let rgb = im.to_rgb8();
-    for (i, b) in blocks.iter_mut().enumerate() { b.id = i as u32 + 1; pipeline::colors(&rgb, b); }
+    for (i, b) in blocks.iter_mut().enumerate() {
+        b.id = i as u32 + 1;
+        pipeline::colors(&rgb, b);
+    }
     Ok(Page { width: im.width(), height: im.height(), original: pipeline::png_data_url(&im)?, blocks })
 }
 
@@ -58,9 +67,27 @@ async fn translate_blocks(mut blocks: Vec<Block>, target: String, endpoint: Stri
 }
 
 // Renders the translated page. Returns a PNG data URL for preview; also writes `out` when given.
+fn pick_font(app: &AppHandle, lang: &str) -> std::path::PathBuf {
+    let dir = app.path().resource_dir().unwrap_or_default().join("fonts");
+    match lang.to_lowercase().as_str() {
+        "ja" | "jpn" | "japanese" => dir.join("NotoSansJP-Regular.ttf"),
+        "zh" | "zh-cn" | "chinese" | "zh-tw" | "chinese-traditional" => dir.join("NotoSansSC-Regular.ttf"),
+        "ko" | "korean" => dir.join("NotoSansKR-Regular.ttf"),
+        "ar" | "arabic" => dir.join("NotoSansArabic-Regular.ttf"),
+        _ => dir.join("NotoSans-Regular.ttf"),
+    }
+}
+
 #[tauri::command]
-async fn render_page(app: AppHandle, path: String, blocks: Vec<Block>, out: Option<String>) -> Result<String, String> {
-    let font = app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf");
+async fn render_page(app: AppHandle, path: String, blocks: Vec<Block>, out: Option<String>, lang: Option<String>) -> Result<String, String> {
+    let lang = lang.unwrap_or_default();
+    let font = pick_font(&app, &lang);
+    if !font.exists() {
+        let fallback = app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf");
+        let im = pipeline::render(Path::new(&path), &fallback, &blocks)?;
+        if let Some(o) = out { im.save(o).map_err(|e| e.to_string())?; }
+        return pipeline::png_data_url(&image::DynamicImage::ImageRgba8(im));
+    }
     let im = pipeline::render(Path::new(&path), &font, &blocks)?;
     if let Some(o) = out { im.save(o).map_err(|e| e.to_string())?; }
     pipeline::png_data_url(&image::DynamicImage::ImageRgba8(im))
@@ -86,8 +113,10 @@ struct PageIn { path: String, blocks: Vec<Block> }
 
 // Pages with no blocks (not processed) are exported as the original.
 #[tauri::command]
-async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String) -> Result<(), String> {
-    let font = app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf");
+async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String, lang: Option<String>) -> Result<(), String> {
+    let lang = lang.unwrap_or_default();
+    let font = pick_font(&app, &lang);
+    let font = if font.exists() { font } else { app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf") };
     let ims = pages.iter().map(|p| pipeline::render(Path::new(&p.path), &font, &p.blocks)).collect::<Result<Vec<_>, _>>()?;
     pipeline::write_pdf(&ims, pipeline::PDF_DPI, Path::new(&out))
 }

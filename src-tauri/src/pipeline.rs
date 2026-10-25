@@ -217,15 +217,20 @@ fn erase(im: &mut image::RgbaImage, b: &Block) {
 // ---------- PDF in (pdfium) ----------
 pub fn rasterise_pdf(pdf: &Path, lib_dir: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
     use pdfium_render::prelude::*;
-    // TODO(local AI): verify these pdfium-render calls against the installed version (bind fn names, as_image() return type).
-    let lib = Pdfium::pdfium_platform_library_name_at_path(&lib_dir.to_string_lossy().to_string());
-    let pdfium = Pdfium::new(Pdfium::bind_to_library(lib).map_err(|e| format!("pdfium library not found in {}: {e}", lib_dir.display()))?);
+    let lib_name = Pdfium::pdfium_platform_library_name_at_path(lib_dir);
+    let pdfium = Pdfium::new(
+        Pdfium::bind_to_library(lib_name.clone())
+            .or_else(|_| Pdfium::bind_to_library(lib_dir.join(lib_name.file_name().unwrap_or_default())))
+            .or_else(|_| Pdfium::bind_to_system_library())
+            .map_err(|e| format!("pdfium library not found in {}: {e}", lib_dir.display()))?,
+    );
     let doc = pdfium.load_pdf_from_file(pdf, None).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(out_dir).map_err(|e| e.to_string())?;
     let cfg = PdfRenderConfig::new().scale_page_by_factor(PDF_DPI / 72.0);
     let mut v = vec![];
     for (i, page) in doc.pages().iter().enumerate() {
-        let img = page.render_with_config(&cfg).map_err(|e| e.to_string())?.as_image();
+        let bitmap = page.render_with_config(&cfg).map_err(|e| e.to_string())?;
+        let img = bitmap.as_image();
         let p = out_dir.join(format!("page-{:03}.png", i + 1));
         img.save(&p).map_err(|e| e.to_string())?;
         v.push(p.to_string_lossy().into_owned());
