@@ -259,10 +259,12 @@ pub fn fit_px(f: &FontArc, text: &str, w: u32, h: u32) -> f32 {
 pub fn render(img: &Path, font_path: &Path, blocks: &[Block]) -> Result<image::RgbaImage, String> {
     let mut im = image::open(img).map_err(|e| e.to_string())?.to_rgba8();
     let font = FontArc::try_from_vec(std::fs::read(font_path).map_err(|e| format!("Font missing ({}): {e}", font_path.display()))?).map_err(|e| e.to_string())?;
+    // Pass 1: erase every original text area. Doing this for all blocks before any new text is drawn
+    // means an erase can never wipe translated text that belongs to an overlapping block.
+    for b in blocks { erase(&mut im, b); }
+    // Pass 2: draw only the translated glyphs (no box, no background), so overlapping boxes stay readable.
     for b in blocks {
         let [x, y, w, h] = b.bbox;
-        erase(&mut im, b);
-        overlay_bg(&mut im, b);
         let t = b.translated.as_deref().unwrap_or(&b.text);
         if t.trim().is_empty() || w < 4.0 || h < 4.0 { continue; }
         let px = fit_px(&font, t, w as u32, h as u32);
@@ -283,27 +285,6 @@ pub fn render(img: &Path, font_path: &Path, blocks: &[Block]) -> Result<image::R
         }
     }
     Ok(im)
-}
-
-// Paints the box background at 75% opacity so content underneath stays faintly visible.
-fn overlay_bg(im: &mut image::RgbaImage, b: &Block) {
-    let (iw, ih) = im.dimensions();
-    let [x, y, w, h] = b.bbox;
-    let x0 = (x as i32).max(0); let y0 = (y as i32).max(0);
-    let x1 = ((x + w) as i32).min(iw as i32 - 1); let y1 = ((y + h) as i32).min(ih as i32 - 1);
-    if x1 <= x0 || y1 <= y0 { return; }
-    const A: f32 = 0.75;
-    for yy in y0..=y1 {
-        for xx in x0..=x1 {
-            let p = *im.get_pixel(xx as u32, yy as u32);
-            im.put_pixel(xx as u32, yy as u32, Rgba([
-                (b.bg[0] as f32 * A + p[0] as f32 * (1.0 - A)) as u8,
-                (b.bg[1] as f32 * A + p[1] as f32 * (1.0 - A)) as u8,
-                (b.bg[2] as f32 * A + p[2] as f32 * (1.0 - A)) as u8,
-                255,
-            ]));
-        }
-    }
 }
 
 pub fn png_data_url(im: &DynamicImage) -> Result<String, String> {
