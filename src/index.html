@@ -43,6 +43,11 @@ canvas{flex:none;margin:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#ff
 .blk textarea{margin-top:4px;resize:vertical;min-height:38px}
 #log{font:12px/1.5 Consolas,monospace;color:var(--mute);flex:1;min-height:140px;overflow:auto;margin-top:10px;white-space:pre-wrap;border:1px solid var(--line);border-radius:6px;padding:8px;background:var(--bg)}
 .note{font-size:12px;color:var(--mute);margin-top:8px}
+.combo{position:relative}.combo input{padding-right:30px}
+.cbtn{position:absolute;right:2px;top:2px;bottom:2px;border:0;background:transparent;padding:0 9px;color:var(--mute)}
+.clist{position:fixed;z-index:50;margin:0;padding:4px 0;list-style:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);overflow:auto}
+.clist li{padding:5px 10px;cursor:pointer}.clist li.act{background:var(--acc);color:var(--accink)}.clist li[aria-selected=true]{font-weight:600}
+.clist li.sep{height:1px;margin:4px 8px;padding:0;background:var(--line);cursor:default}
 .st{font-size:12px;color:var(--mute);align-self:center}.st.ok{color:var(--ok)}.st.bad{color:#b3261e}
 </style></head>
 <body>
@@ -67,8 +72,7 @@ canvas{flex:none;margin:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#ff
   <h2 style="margin-top:18px">2. Translation endpoint</h2>
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
   <div class="row" style="margin-top:6px"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
-  <label for="tgt">Translate into</label><input id="tgt" value="English" list="langs">
-  <datalist id="langs"><option>English</option><option>Spanish</option><option>French</option><option>German</option><option>Ukrainian</option><option>Japanese</option></datalist>
+  <label for="tgt">Translate into</label><div class="combo"><input id="tgt" value="English" role="combobox" aria-expanded="false" aria-controls="tgtList" aria-autocomplete="list" autocomplete="off" spellcheck="false"><button type="button" id="tgtBtn" class="cbtn" aria-label="Show languages" tabindex="-1">▾</button><ul id="tgtList" class="clist" role="listbox" aria-label="Languages" hidden></ul></div>
 </section>
 <section class="mid" aria-label="Page">
   <div class="view" role="group" aria-label="View">
@@ -139,7 +143,7 @@ async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …")
   $('#mode').querySelector('option[value=text]').disabled=!isPdf;
   if(!isPdf&&$('#mode').value==='text'){$('#mode').value='hybrid';applyMode();log("Selectable-text mode is only for PDFs; switched to Automatic.")}
   $('#save').disabled=true;$('#run').disabled=false;zoom=1;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
-async function typeset(i){const p=pg[i];p.out=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null}))}
+async function typeset(i){const p=pg[i];p.out=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,lang:fontLang()}))}
 async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
   if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true;
     if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
@@ -152,7 +156,7 @@ $('#run').onclick=async()=>{$('#run').disabled=true;
   $('#save').disabled=false;$('#run').disabled=false;log("Done.")};
 $('#save').onclick=async()=>{const pdf=isPdf;
   const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
-  try{pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o});log("Saved "+o)}catch(e){log("Error: "+e)}};
+  try{pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,lang:fontLang()}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,lang:fontLang()});log("Saved "+o)}catch(e){log("Error: "+e)}};
 $('#browse').onclick=async()=>{const p=await T.dialog.open({filters:[{name:"Images and PDF",extensions:["png","jpg","jpeg","webp","bmp","pdf"]}]});if(p)setDoc(p)};
 const setConn=(c,t)=>{const e=$('#conn');e.className="st "+c;e.textContent=t};
 $('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;
@@ -162,6 +166,37 @@ $('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
 $('#prev').onclick=()=>go(cur-1);$('#next').onclick=()=>go(cur+1);
 $$('.view button').forEach(b=>b.onclick=()=>setView(b.dataset.v));
 T.webview.getCurrentWebview().onDragDropEvent(e=>{const d=e.payload;$('#drop').classList.toggle('on',d.type==='over'||d.type==='enter');if(d.type==='drop'&&d.paths[0])setDoc(d.paths[0])});
+// ---- "Translate into" combo box: names matching the typed text first, a thin line, then every other language ----
+const LANGS=["English","Spanish","French","German","Italian","Portuguese","Dutch","Polish","Czech","Slovak","Hungarian","Romanian","Bulgarian","Ukrainian","Russian","Greek","Turkish","Arabic","Hebrew","Persian","Hindi","Bengali","Urdu","Tamil","Thai","Vietnamese","Indonesian","Malay","Filipino","Chinese (Simplified)","Chinese (Traditional)","Japanese","Korean","Swedish","Norwegian","Danish","Finnish","Estonian","Latvian","Lithuanian","Croatian","Serbian","Slovenian","Catalan","Irish","Icelandic","Swahili"];
+(function(){const inp=$('#tgt'),ul=$('#tgtList'),btn=$('#tgtBtn');let items=[],act=-1;
+  function build(){const q=inp.value.trim().toLowerCase(),lc=l=>l.toLowerCase();
+    const starts=q?LANGS.filter(l=>lc(l).startsWith(q)):[],has=q?LANGS.filter(l=>!lc(l).startsWith(q)&&lc(l).includes(q)):[];
+    const top=[...starts,...has],rest=LANGS.filter(l=>!top.includes(l));
+    ul.innerHTML="";items=[];act=-1;
+    const add=l=>{const li=document.createElement('li');li.setAttribute('role','option');li.id="lang-"+items.length;li.textContent=l;
+      li.setAttribute('aria-selected',l.toLowerCase()===inp.value.trim().toLowerCase());
+      li.onmouseenter=()=>setAct(items.indexOf(l));li.onclick=()=>pick(l);ul.appendChild(li);items.push(l)};
+    top.forEach(add);
+    if(top.length&&rest.length){const sep=document.createElement('li');sep.className="sep";sep.setAttribute('role','separator');ul.appendChild(sep)}
+    rest.forEach(add)}
+  function place(){const r=inp.getBoundingClientRect(),below=innerHeight-r.bottom-8,above=r.top-8,up=below<180&&above>below,maxH=Math.max(120,Math.min(300,up?above:below));
+    Object.assign(ul.style,{left:r.left+'px',width:r.width+'px',maxHeight:maxH+'px',top:up?'auto':(r.bottom+2)+'px',bottom:up?(innerHeight-r.top+2)+'px':'auto'})}
+  function open(){build();ul.hidden=false;inp.setAttribute('aria-expanded','true');place()}
+  function close(){ul.hidden=true;inp.setAttribute('aria-expanded','false');inp.removeAttribute('aria-activedescendant');act=-1}
+  function setAct(i){act=i;[...ul.querySelectorAll('li[role=option]')].forEach((li,k)=>li.classList.toggle('act',k===i));
+    const li=ul.querySelectorAll('li[role=option]')[i];if(li){inp.setAttribute('aria-activedescendant',li.id);li.scrollIntoView({block:'nearest'})}}
+  function pick(l){inp.value=l;inp.dispatchEvent(new Event('change',{bubbles:true}));close()}
+  inp.addEventListener('focus',open);inp.addEventListener('click',()=>{if(ul.hidden)open()});inp.addEventListener('input',open);inp.addEventListener('blur',close);
+  btn.addEventListener('mousedown',e=>{e.preventDefault();if(ul.hidden){inp.focus();open()}else close()});
+  ul.addEventListener('mousedown',e=>e.preventDefault()); // keep focus in the field while clicking or dragging the list's scrollbar
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();if(ul.hidden)open();const n=items.length;if(n)setAct(e.key==='ArrowDown'?(act+1)%n:(act<=0?n-1:act-1))}
+    else if(e.key==='Enter'){if(!ul.hidden&&act>=0){e.preventDefault();pick(items[act])}else close()}
+    else if(e.key==='Escape'&&!ul.hidden){e.preventDefault();close()}});
+  addEventListener('resize',()=>{if(!ul.hidden)place()});
+  addEventListener('scroll',e=>{if(!ul.hidden&&!ul.contains(e.target))place()},true)})();
+// The font for the translated text depends on the target language (Chinese variants share one font).
+const fontLang=()=>{const v=$('#tgt').value.trim();return /^chinese/i.test(v)?"chinese":v};
 applyMode();
 inv('list_languages').then(ls=>{const sel=$('#lang');ls.forEach(l=>sel.add(new Option(l,l)));if(!ls.length)log("No OCR models found. Run: npm run models")});
 })();
