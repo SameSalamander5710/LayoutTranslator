@@ -236,12 +236,75 @@ pub fn colors(img: &RgbImage, b: &mut Block) {
 }
 
 // ---------- Translation: local llama.cpp server (OpenAI-compatible endpoint, no key, any model name) ----------
-async fn call(texts: &[&str], target: &str, base: &str) -> Result<Vec<String>, String> {
-    let body = serde_json::json!({
-        "model": "default", "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": format!("You are a translation engine. Translate every string in the JSON array into {target}. Return ONLY a JSON array of strings with the same length and order. Keep numbers, names and line breaks.")},
-            {"role": "user", "content": serde_json::to_string(texts).unwrap()}]});
+/// Settings from the "Translation options" panel. Everything here is sent to the model as instructions.
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TranslateOptions {
+    pub tone: String,         // "", "formal" or "informal"
+    pub glossary: String,     // one entry per line: `term = translation`; a line with only a term means "keep unchanged"
+    pub instructions: String, // free text
+    pub use_context: bool,    // send the whole page's text first, as context
+}
+impl Default for TranslateOptions {
+    fn default() -> Self { Self { tone: String::new(), glossary: String::new(), instructions: String::new(), use_context: true } }
+}
+
+/// Parses the glossary box. Separators: `=`, `=>`, `->`, `→` or a tab. Blank lines and lines starting with `#` are ignored.
+pub fn parse_glossary(text: &str) -> Vec<(String, Option<String>)> {
+    text.lines().filter_map(|l| {
+        let l = l.trim();
+        if l.is_empty() || l.starts_with('#') { return None; }
+        for sep in ["=>", "->", "→", "=", "\t"] {
+            if let Some((a, b)) = l.split_once(sep) {
+                let (a, b) = (a.trim(), b.trim());
+                return if a.is_empty() { None } else { Some((a.to_string(), if b.is_empty() { None } else { Some(b.to_string()) })) };
+            }
+        }
+        Some((l.to_string(), None))
+    }).collect()
+}
+
+const CONTEXT_MAX_CHARS: usize = 6000; // keeps the context inside small local-model windows
+const BATCH_MAX_BLOCKS: usize = 25;
+const BATCH_MAX_CHARS: usize = 3000;
+
+fn system_prompt(target: &str, o: &TranslateOptions, page_text: &str) -> String {
+    let mut s = format!("You are a translation engine. Translate every string in the JSON array into {target}. Return ONLY a JSON array of strings with the same length and order. Keep numbers, names and line breaks.");
+    match o.tone.as_str() {
+        "formal" => s.push_str("\nUse a formal tone (for example formal forms of address)."),
+        "informal" => s.push_str("\nUse an informal, familiar tone (for example informal forms of address)."),
+        _ => {}
+    }
+    // Only glossary terms that occur on this page are sent, so a long glossary does not eat the context window.
+    let hay = page_text.to_lowercase();
+    let terms: Vec<_> = parse_glossary(&o.glossary).into_iter().filter(|(t, _)| hay.contains(&t.to_lowercase())).collect();
+    if !terms.is_empty() {
+        s.push_str("\nGlossary. Whenever the source term appears, use exactly this translation. Terms marked keep must stay unchanged:");
+        for (t, tr) in terms {
+            match tr { Some(tr) => s.push_str(&format!("\n- {t} => {tr}")), None => s.push_str(&format!("\n- {t} => (keep unchanged)")) }
+        }
+    }
+    let ins = o.instructions.trim();
+    if !ins.is_empty() { s.push_str(&format!("\nAdditional instructions from the user: {ins}")); }
+    s
+}
+
+/// The messages that come before every request for one page: the instructions and, optionally, the page's full text as
+/// context. Because the prefix is identical for every request on the page, llama.cpp can reuse its cached prompt.
+fn prefix(target: &str, o: &TranslateOptions, page_text: &str) -> Vec<serde_json::Value> {
+    let mut v = vec![serde_json::json!({"role": "system", "content": system_prompt(target, o, page_text)})];
+    if o.use_context && !page_text.trim().is_empty() {
+        let ctx: String = page_text.chars().take(CONTEXT_MAX_CHARS).collect();
+        v.push(serde_json::json!({"role": "user", "content": format!("For context only, here is the full text of the page that the strings come from. Do not translate it yet.\n\n{ctx}")}));
+        v.push(serde_json::json!({"role": "assistant", "content": "Understood. Send me the JSON array of strings to translate."}));
+    }
+    v
+}
+
+async fn call(prefix: &[serde_json::Value], texts: &[&str], base: &str) -> Result<Vec<String>, String> {
+    let mut messages = prefix.to_vec();
+    messages.push(serde_json::json!({"role": "user", "content": serde_json::to_string(texts).unwrap()}));
+    let body = serde_json::json!({"model": "default", "temperature": 0.2, "messages": messages});
     let rq = reqwest::Client::new().post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body);
     let r = rq.send().await.map_err(|e| format!("Cannot reach {base}: {e}"))?;
     if !r.status().is_success() { return Err(format!("Endpoint returned HTTP {}", r.status())); }
@@ -267,18 +330,71 @@ pub async fn test_connection(base: &str) -> Result<String, String> {
     Ok(match id { Some(id) => format!("Connected. Model: {id}"), None => "Connected.".to_string() })
 }
 
-pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str) -> Result<(), String> {
-    let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
-    let out = match call(&texts, target, base).await {
-        Ok(v) if v.len() == texts.len() => v,
-        _ => { // batch failed or lost lines: retry one block at a time
-            let mut v = vec![];
-            for t in &texts { v.push(call(&[t], target, base).await?.into_iter().next().unwrap_or_default()); }
-            v
-        }
-    };
-    for (b, t) in blocks.iter_mut().zip(out) { b.translated = Some(t); }
+/// Translates the blocks of ONE page. The model first sees the whole page's text as context (if enabled), then the
+/// strings to translate, in batches. `only` limits translation to those block ids (the others are left as they are).
+pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: &TranslateOptions, only: Option<&[u32]>) -> Result<(), String> {
+    let page_text = blocks.iter().map(|b| b.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
+    let pre = prefix(target, opts, &page_text);
+    let idx: Vec<usize> = blocks.iter().enumerate()
+        .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or(true, |o| o.contains(&b.id))).map(|(i, _)| i).collect();
+    let mut batches: Vec<Vec<usize>> = vec![];
+    let (mut cur, mut chars) = (vec![], 0usize);
+    for &i in &idx {
+        let n = blocks[i].text.len();
+        if !cur.is_empty() && (cur.len() >= BATCH_MAX_BLOCKS || chars + n > BATCH_MAX_CHARS) { batches.push(std::mem::take(&mut cur)); chars = 0; }
+        cur.push(i); chars += n;
+    }
+    if !cur.is_empty() { batches.push(cur); }
+    for batch in batches {
+        let texts: Vec<String> = batch.iter().map(|&i| blocks[i].text.clone()).collect();
+        let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
+        let out = match call(&pre, &refs, base).await {
+            Ok(v) if v.len() == refs.len() => v,
+            _ => { // batch failed or lost lines: retry one block at a time (same context prefix)
+                let mut v = vec![];
+                for t in &refs { v.push(call(&pre, &[t], base).await?.into_iter().next().unwrap_or_default()); }
+                v
+            }
+        };
+        for (&i, t) in batch.iter().zip(out) { blocks[i].translated = Some(t); }
+    }
     Ok(())
+}
+
+// ---------- Box editing helpers ----------
+/// Re-estimates text and background colour for a box the user moved or resized.
+pub fn sample_colors(img: &Path, bbox: [f32; 4]) -> Result<([u8; 3], [u8; 3]), String> {
+    let im = image::open(img).map_err(|e| e.to_string())?.to_rgb8();
+    Ok(box_colors(&im, bbox[0], bbox[1], bbox[2], bbox[3]))
+}
+
+/// Builds a block for a box the user drew: selectable PDF text under the box if there is any (unless mode is "ocr"),
+/// otherwise OCR on just that area (unless mode is "text"). The text may come back empty; the user can type it in.
+pub fn read_region(img: &Path, dir: &Path, cache: &EngineCache, bbox: [f32; 4], mode: &str) -> Result<Block, String> {
+    let im = load_image(img).map_err(|e| e.to_string())?;
+    let (iw, ih) = im.dimensions();
+    let x0 = bbox[0].max(0.0).min(iw as f32 - 1.0);
+    let y0 = bbox[1].max(0.0).min(ih as f32 - 1.0);
+    let region = [x0, y0, bbox[2].min(iw as f32 - x0).max(1.0), bbox[3].min(ih as f32 - y0).max(1.0)];
+    let mut found: Vec<(f32, f32, String, f32)> = vec![]; // y, x, text, line height
+    let mut conf = 1.0f32;
+    if mode != "ocr" {
+        if let Some(layer) = load_layer(img) {
+            for r in merge_layer_lines(&layer.lines) {
+                if overlap_frac(&r.b, &region) > 0.5 { found.push((r.b[1], r.b[0], r.t.clone(), r.b[3])); }
+            }
+        }
+    }
+    if found.is_empty() && mode != "text" {
+        let crop = image::imageops::crop_imm(&im, region[0] as u32, region[1] as u32, region[2] as u32, region[3] as u32).to_image();
+        for o in ocr_lines(&crop, dir, cache)? { conf = conf.min(o.c); found.push((o.b[1], o.b[0], o.t.clone(), o.b[3])); }
+    }
+    found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let text = found.iter().map(|f| f.2.as_str()).collect::<Vec<_>>().join(" ");
+    let font_px = if found.is_empty() { region[3] * 0.6 } else { found.iter().map(|f| f.3).sum::<f32>() / found.len() as f32 * 0.85 };
+    let mut b = Block { id: 0, bbox: region, text, translated: None, conf: if found.is_empty() { 0.0 } else { conf }, font_px, fg: [0; 3], bg: [255; 3] };
+    colors(&im, &mut b);
+    Ok(b)
 }
 
 // ---------- Erase + typeset ----------
@@ -695,5 +811,32 @@ mod tests {
     fn text_mode_needs_a_text_layer() {
         let r = detect(Path::new("/nonexistent/page.png"), Path::new("/nonexistent"), &EngineCache::default(), "text");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn glossary_parsing() {
+        let g = parse_glossary("Haus = house\n# comment\n\nAcme GmbH\nA -> B\nX → Y\nEmpty =\n= nothing");
+        assert_eq!(g[0], ("Haus".into(), Some("house".into())));
+        assert_eq!(g[1], ("Acme GmbH".into(), None));
+        assert_eq!(g[2], ("A".into(), Some("B".into())));
+        assert_eq!(g[3], ("X".into(), Some("Y".into())));
+        assert_eq!(g[4], ("Empty".into(), None));
+        assert_eq!(g.len(), 5);
+    }
+
+    #[test]
+    fn prompt_uses_only_relevant_glossary_terms() {
+        let o = TranslateOptions { tone: "formal".into(), glossary: "Haus = house\nKatze = cat".into(), instructions: "Legal text.".into(), use_context: true };
+        let p = system_prompt("English", &o, "Das Haus ist groß.");
+        assert!(p.contains("formal tone") && p.contains("Haus => house") && p.contains("Legal text."));
+        assert!(!p.contains("Katze"));
+    }
+
+    #[test]
+    fn context_turn_is_optional() {
+        let mut o = TranslateOptions::default();
+        assert_eq!(prefix("English", &o, "Hallo Welt").len(), 3); // system + context + acknowledgement
+        o.use_context = false;
+        assert_eq!(prefix("English", &o, "Hallo Welt").len(), 1);
     }
 }

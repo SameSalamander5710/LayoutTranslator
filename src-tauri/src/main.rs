@@ -61,9 +61,29 @@ async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: St
 }
 
 #[tauri::command]
-async fn translate_blocks(mut blocks: Vec<Block>, target: String, endpoint: String) -> Result<Vec<Block>, String> {
-    pipeline::translate(&mut blocks, &target, &endpoint).await?;
+async fn translate_blocks(mut blocks: Vec<Block>, target: String, endpoint: String, options: Option<pipeline::TranslateOptions>, only: Option<Vec<u32>>)
+    -> Result<Vec<Block>, String> {
+    let options = options.unwrap_or_default();
+    pipeline::translate(&mut blocks, &target, &endpoint, &options, only.as_deref()).await?;
     Ok(blocks)
+}
+
+// Box editing: read the text of a box the user drew (selectable text first, then OCR) ...
+#[tauri::command]
+async fn read_region(app: AppHandle, path: String, lang: String, mode: Option<String>, bbox: [f32; 4]) -> Result<Block, String> {
+    let mode = mode.unwrap_or_else(|| "hybrid".into());
+    let dir = if mode == "text" { PathBuf::new() } else { lang_dir(&app, &lang)? };
+    let p = PathBuf::from(&path);
+    let cache = Arc::new(EngineCache::default());
+    tauri::async_runtime::spawn_blocking(move || pipeline::read_region(&p, &dir, &cache, bbox, &mode))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// ... and re-sample the colours of a box the user moved or resized.
+#[tauri::command]
+async fn sample_colors(path: String, bbox: [f32; 4]) -> Result<([u8; 3], [u8; 3]), String> {
+    pipeline::sample_colors(Path::new(&path), bbox)
 }
 
 #[tauri::command]
@@ -128,7 +148,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineCache::default())
-        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, test_connection, render_page, open_document, preview, export_pdf])
+        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, read_region, sample_colors, test_connection, render_page, open_document, preview, export_pdf])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }

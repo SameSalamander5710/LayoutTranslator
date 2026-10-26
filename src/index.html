@@ -38,6 +38,12 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .stage{flex:1;min-height:160px;overflow:auto;background:var(--bg);border-radius:6px;padding:10px;display:flex}
 canvas{flex:none;margin:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#fff}
 #blocksView{flex:1;min-height:0;overflow:auto}
+details.opts{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
+details.opts summary{cursor:pointer;font-size:13px}details.opts summary .st{margin-left:4px}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink);margin-top:10px}.chk input{width:auto}
+.hint{color:var(--mute)}textarea{resize:vertical;font:inherit}
+.blk.sel{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}.blk textarea.src{color:var(--mute)}
+button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;flex:1;min-width:150px}
 .blk{border-bottom:1px solid var(--line);padding:8px 0}
 .blk small{color:var(--mute);display:block}
 .blk textarea{margin-top:4px;resize:vertical;min-height:38px}
@@ -73,6 +79,16 @@ canvas{flex:none;margin:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#ff
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
   <div class="row" style="margin-top:6px"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
   <label for="tgt">Translate into</label><div class="combo"><input id="tgt" value="English" role="combobox" aria-expanded="false" aria-controls="tgtList" aria-autocomplete="list" autocomplete="off" spellcheck="false"><button type="button" id="tgtBtn" class="cbtn" aria-label="Show languages" tabindex="-1">▾</button><ul id="tgtList" class="clist" role="listbox" aria-label="Languages" hidden></ul></div>
+  <details class="opts" id="opts">
+    <summary>Translation options <span id="optsInfo" class="st"></span></summary>
+    <label for="tone">Tone</label>
+    <select id="tone"><option value="">Default</option><option value="formal">Formal</option><option value="informal">Informal</option></select>
+    <label for="gloss">Glossary <span class="hint">(term = translation, one per line)</span></label>
+    <textarea id="gloss" rows="4" spellcheck="false" placeholder="Haus = house&#10;Acme GmbH&#10;# a term alone is kept unchanged"></textarea>
+    <label for="instr">Extra instructions</label>
+    <textarea id="instr" rows="2" placeholder="e.g. This is a legal contract. Keep article numbers unchanged."></textarea>
+    <label class="chk"><input type="checkbox" id="ctx" checked> Use the whole page as context</label>
+  </details>
 </section>
 <section class="mid" aria-label="Page">
   <div class="view" role="group" aria-label="View">
@@ -84,6 +100,7 @@ canvas{flex:none;margin:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#ff
   <div class="bar"><button id="prev" aria-label="Previous page">◀</button><span id="pn">–</span><button id="next" aria-label="Next page">▶</button>
     <span class="sp"></span>
     <span class="zc" id="zoomctl" role="group" aria-label="Zoom"><button id="zout" aria-label="Zoom out">−</button><span id="zl" aria-live="polite">100%</span><button id="zin" aria-label="Zoom in">+</button><button id="zfit" aria-label="Fit page to the pane">Fit</button></span></div>
+  <div class="bar" id="boxbar" hidden><button id="addbox">+ Add box</button><button id="delbox" disabled>Delete box</button><span class="note" id="boxhint"></span></div>
   <div class="stage" id="stage"><canvas id="cv" width="620" height="760"></canvas></div>
   <div id="blocksView" hidden><p class="note" style="margin-top:0">Edit any translation here; the page re-renders.</p><div id="blocks"><p class="note">Run the pipeline to see detected blocks.</p></div></div>
 </section>
@@ -103,31 +120,94 @@ if(!window.__TAURI__){document.body.insertAdjacentHTML('afterbegin','<p role="al
 
 const T=window.__TAURI__,inv=(c,a)=>T.core.invoke(c,a),$=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const cv=$('#cv'),cx=cv.getContext('2d');
-let pg=[],cur=0,isPdf=false,view="orig",timer=null;
+let pg=[],cur=0,isPdf=false,view="orig",timer=null,sel=null,adding=false,drag=null;
 const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
 const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
 const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=u});
 const setStep=(k,st,t=st)=>{const li=$(`[data-s=${k}]`);li.className=st;li.lastChild.textContent=t};
-for(const k of ["url","tgt","mode"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
+for(const k of ["url","tgt","mode","tone","gloss","instr"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
+// ---- Translation options: stored locally, sent with every translate call ----
+$('#ctx').checked=localStorage.getItem("lt_ctx")!=="0";$('#ctx').addEventListener('change',e=>localStorage.setItem("lt_ctx",e.target.checked?"1":"0"));
+const opts=()=>({tone:$('#tone').value,glossary:$('#gloss').value,instructions:$('#instr').value,useContext:$('#ctx').checked});
+function optsInfo(){const o=opts(),n=o.glossary.split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length,a=[];
+  if(o.tone)a.push(o.tone);if(n)a.push(n+(n===1?' term':' terms'));if(o.instructions.trim())a.push('instructions');if(!o.useContext)a.push('no page context');
+  $('#optsInfo').textContent=a.length?'· '+a.join(', '):''}
+['tone','gloss','instr','ctx'].forEach(k=>$('#'+k).addEventListener('input',optsInfo));optsInfo();
+
+// ---- Box editing on the "Detected text" tab: select, move, resize, delete, add ----
+const HND=[['nw',0,0],['n',.5,0],['ne',1,0],['e',1,.5],['se',1,1],['s',.5,1],['sw',0,1],['w',0,.5]];
+const CUR={nw:'nwse-resize',se:'nwse-resize',ne:'nesw-resize',sw:'nesw-resize',n:'ns-resize',s:'ns-resize',e:'ew-resize',w:'ew-resize'};
+const dispScale=()=>(cv.clientWidth/cv.width)||1;
+const selBlock=()=>P().blocks.find(b=>b.id===sel);
+const ptr=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*cv.width/r.width,(e.clientY-r.top)*cv.height/r.height]};
+const clamp=(v,a,b)=>Math.min(Math.max(v,a),Math.max(a,b));
+function handleAt(b,x,y){const r=8/dispScale();for(const[k,fx,fy]of HND){if(Math.abs(x-(b.bbox[0]+b.bbox[2]*fx))<=r&&Math.abs(y-(b.bbox[1]+b.bbox[3]*fy))<=r)return k}return null}
+function hit(x,y){const s=selBlock();if(s){const k=handleAt(s,x,y);if(k)return{b:s,k}}
+  const bl=P().blocks;for(let i=bl.length-1;i>=0;i--){const[bx,by,bw,bh]=bl[i].bbox;if(x>=bx&&x<=bx+bw&&y>=by&&y<=by+bh)return{b:bl[i],k:null}}return null}
+function dragBox(d,x,y){const dx=x-d.x0,dy=y-d.y0,W=cv.width,H=cv.height,min=8;let[bx,by,bw,bh]=d.start;
+  if(!d.k)return[clamp(bx+dx,0,W-bw),clamp(by+dy,0,H-bh),bw,bh];
+  let x1=bx+bw,y1=by+bh;
+  if(d.k.includes('w'))bx=clamp(bx+dx,0,x1-min);if(d.k.includes('e'))x1=clamp(x1+dx,bx+min,W);
+  if(d.k.includes('n'))by=clamp(by+dy,0,y1-min);if(d.k.includes('s'))y1=clamp(y1+dy,by+min,H);
+  return[bx,by,x1-bx,y1-by]}
+function syncBoxUi(){const on=!!P().ocr;$('#addbox').disabled=!on;$('#addbox').textContent=adding?'Cancel':'+ Add box';$('#delbox').disabled=sel==null;
+  $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it.'}
+function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i),500)}
+async function refreshColors(b){try{const c=await inv('sample_colors',{path:P().path,bbox:b.bbox});b.fg=c[0];b.bg=c[1]}catch(e){}}
+async function addBox(rect){const p=P();let b;
+  try{b=await inv('read_region',{path:p.path,lang:$('#lang').value,mode:$('#mode').value,bbox:rect.map(v=>Math.round(v))})}
+  catch(e){log("Could not read text in the new box: "+e);b={id:0,bbox:rect,text:"",translated:null,conf:0,fontPx:rect[3]*.6,fg:[0,0,0],bg:[255,255,255]}}
+  b.id=Math.max(0,...p.blocks.map(k=>k.id))+1;p.blocks.push(b);sel=b.id;
+  log(b.text?`Added box ${b.id}: "${b.text.slice(0,40)}"`:`Added box ${b.id} (no text found; type it in the Text blocks tab).`);
+  syncBoxUi();list();render();retypeset(cur)}
+function delBox(){if(sel==null)return;const p=P();p.blocks=p.blocks.filter(b=>b.id!==sel);sel=null;syncBoxUi();list();render();retypeset(cur)}
+async function retranslate(id){const i=cur,p=pg[i];log(`Translating block ${id} …`);
+  try{p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts(),only:[id]});if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}}
+cv.addEventListener('pointerdown',e=>{if(view!=='boxes'||e.button!==0||!P().ocr)return;const[x,y]=ptr(e);
+  if(adding)drag={kind:'add',x0:x,y0:y,rect:[x,y,0,0]};
+  else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox]}}
+  cv.setPointerCapture(e.pointerId);syncBoxUi();render()});
+cv.addEventListener('pointermove',e=>{if(view!=='boxes')return;const[x,y]=ptr(e);
+  if(drag){if(drag.kind==='add')drag.rect=[Math.min(x,drag.x0),Math.min(y,drag.y0),Math.abs(x-drag.x0),Math.abs(y-drag.y0)];else{drag.b.bbox=dragBox(drag,x,y);drag.changed=true}render();return}
+  const h=adding?null:hit(x,y);cv.style.cursor=adding?'crosshair':h?(h.k?CUR[h.k]:'move'):'default'});
+cv.addEventListener('pointerup',async()=>{if(!drag)return;const d=drag;drag=null;
+  if(d.kind==='add'){adding=false;syncBoxUi();cv.style.cursor='default';if(d.rect[2]>=8&&d.rect[3]>=8)await addBox(d.rect);else render();return}
+  if(d.changed){await refreshColors(d.b);retypeset(cur)}render()});
+cv.addEventListener('pointercancel',()=>{drag=null;render()});
+$('#addbox').onclick=()=>{adding=!adding;syncBoxUi();cv.style.cursor=adding?'crosshair':'default'};
+$('#delbox').onclick=delBox;
+document.addEventListener('keydown',e=>{if(view!=='boxes')return;
+  if(e.key==='Escape'&&adding){adding=false;syncBoxUi();render();return}
+  if((e.key==='Delete'||e.key==='Backspace')&&sel!=null&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){e.preventDefault();delBox()}});
+
 let zoom=1;
-function applyZoom(){const st=$('#stage');if(st.hidden||!st.clientWidth||!cv.width)return;
+function applyZoom(redraw=true){const st=$('#stage');if(st.hidden||!st.clientWidth||!cv.width)return;
   const fit=Math.min((st.clientWidth-20)/cv.width,(st.clientHeight-20)/cv.height),k=Math.max(fit,.02)*zoom;
-  cv.style.width=cv.width*k+'px';cv.style.height=cv.height*k+'px';$('#zl').textContent=Math.round(zoom*100)+'%'}
+  cv.style.width=cv.width*k+'px';cv.style.height=cv.height*k+'px';$('#zl').textContent=Math.round(zoom*100)+'%';if(redraw===true&&view==='boxes')render()}
 function setZoom(z){const st=$('#stage'),fx=(st.scrollLeft+st.clientWidth/2)/st.scrollWidth,fy=(st.scrollTop+st.clientHeight/2)/st.scrollHeight;
   zoom=Math.min(8,Math.max(.25,z));applyZoom();st.scrollLeft=fx*st.scrollWidth-st.clientWidth/2;st.scrollTop=fy*st.scrollHeight-st.clientHeight/2}
 $('#zin').onclick=()=>setZoom(zoom*1.25);$('#zout').onclick=()=>setZoom(zoom/1.25);$('#zfit').onclick=()=>setZoom(1);
-new ResizeObserver(applyZoom).observe($('#stage'));
-function render(){if(view==="blocks")return;const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);applyZoom();return}
-  cv.width=base.width;cv.height=base.height;cx.drawImage(base,0,0);
-  if(view==="boxes")p.blocks.forEach(b=>{cx.strokeStyle="#1f9d6b";cx.lineWidth=Math.max(1.5,cv.width/600);cx.strokeRect(...b.bbox);
-    cx.fillStyle="#1f9d6b";cx.font=`bold ${Math.max(11,cv.width/60)}px sans-serif`;cx.fillText(b.id+" · "+Math.round(b.conf*100)+"%",b.bbox[0],b.bbox[1]-4)});
-  applyZoom()}
+new ResizeObserver(()=>applyZoom()).observe($('#stage'));
+function render(){if(view==="blocks")return;const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);applyZoom(false);return}
+  cv.width=base.width;cv.height=base.height;cx.drawImage(base,0,0);applyZoom(false);
+  if(view!=="boxes")return;
+  const sc=dispScale(),lw=2/sc;
+  p.blocks.forEach(b=>{const on=b.id===sel,c=on?"#1f6feb":"#1f9d6b";cx.strokeStyle=c;cx.lineWidth=on?lw*1.5:lw;cx.strokeRect(...b.bbox);
+    cx.fillStyle=c;cx.font=`bold ${12/sc}px sans-serif`;cx.fillText(b.id+(b.conf>0?" · "+Math.round(b.conf*100)+"%":""),b.bbox[0],b.bbox[1]-4/sc)});
+  const s=selBlock();if(s){const r=5/sc;cx.fillStyle="#fff";cx.strokeStyle="#1f6feb";cx.lineWidth=lw;
+    for(const[,fx,fy]of HND){const hx=s.bbox[0]+s.bbox[2]*fx,hy=s.bbox[1]+s.bbox[3]*fy;cx.fillRect(hx-r,hy-r,2*r,2*r);cx.strokeRect(hx-r,hy-r,2*r,2*r)}}
+  if(drag&&drag.kind==="add"){cx.setLineDash([6/sc,4/sc]);cx.strokeStyle="#1f6feb";cx.lineWidth=lw;cx.strokeRect(...drag.rect);cx.setLineDash([])}}
 function setView(v){view=v;$$('.view button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v));
-  const bv=v==='blocks';$('#stage').hidden=bv;$('#blocksView').hidden=!bv;$$('#zoomctl button').forEach(b=>b.disabled=bv);render()}
+  const bv=v==='blocks';$('#stage').hidden=bv;$('#blocksView').hidden=!bv;$$('#zoomctl button').forEach(b=>b.disabled=bv);$('#boxbar').hidden=v!=='boxes';if(v!=='boxes')adding=false;syncBoxUi();render()}
 function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":'<p class="note">Run the pipeline to see detected blocks.</p>';
-  bl.forEach(b=>{const d=document.createElement('div');d.className="blk";d.innerHTML=`<small>#${b.id} · conf ${Math.round(b.conf*100)}%</small><div></div>`;d.children[1].textContent=b.text;
-  if(b.translated!=null){const t=document.createElement('textarea');t.value=b.translated;t.setAttribute('aria-label','Translation of block '+b.id);
-    t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{await typeset(i);if(i===cur&&view!=='blocks')setView('out')},400)};d.appendChild(t)}box.appendChild(d)})}
+  bl.forEach(b=>{const d=document.createElement('div');d.className="blk"+(b.id===sel?" sel":"");
+    d.innerHTML=`<small>#${b.id} · ${b.conf>0?'conf '+Math.round(b.conf*100)+'%':'no text read, type it below'}</small>`;
+    const sv=document.createElement('textarea');sv.className="src";sv.rows=2;sv.value=b.text;sv.setAttribute('aria-label','Source text of block '+b.id);
+    sv.oninput=()=>{b.text=sv.value;if(b.translated==null)retypeset(cur)};d.appendChild(sv);
+    if(b.translated!=null){const t=document.createElement('textarea');t.value=b.translated;t.setAttribute('aria-label','Translation of block '+b.id);
+      t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{await typeset(i);if(i===cur&&view!=='blocks')setView('out')},400)};d.appendChild(t)}
+    const rb=document.createElement('button');rb.className="sm";rb.textContent=b.translated!=null?'Retranslate':'Translate';rb.onclick=()=>retranslate(b.id);d.appendChild(rb);
+    d.addEventListener('click',()=>{sel=b.id;$$('.blk').forEach(x=>x.classList.toggle('sel',x===d))});box.appendChild(d)})}
 const MODES={hybrid:"PDFs: selectable text is used directly, OCR reads only what is left (images, scans). Images: OCR.",
   ocr:"Everything is read with OCR, even if the PDF has selectable text.",
   text:"Only selectable PDF text is translated. Text inside images or scans is ignored, and no OCR runs."};
@@ -135,8 +215,8 @@ function applyMode(){const m=$('#mode').value;$('#modeNote').textContent=MODES[m
 $('#mode').addEventListener('change',()=>{applyMode();
   if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.out=null});$('#save').disabled=true;
   $$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});log("Detection method changed. Press Run all to detect again.");setView('orig');go(cur)});
-async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));const p=P();if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}));
-  $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";render();list()}
+async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));sel=null;adding=false;const p=P();if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}));
+  $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";syncBoxUi();render();list()}
 async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
   try{pg=(await inv('open_document',{path})).map(p=>({path:p,blocks:[],orig:null,out:null,ocr:false}))}catch(e){return log("Error: "+e)}
   isPdf=/\.pdf$/i.test(path);
@@ -149,7 +229,7 @@ async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
     if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
     else if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`)}
   setStep('ocr','done',"done");setStep('tr','run',lab);
-  if(p.blocks.length)p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value});
+  if(p.blocks.length)p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts()});
   setStep('tr','done',"done");setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
 $('#run').onclick=async()=>{$('#run').disabled=true;
   for(let i=0;i<pg.length;i++){try{log(`Page ${i+1}/${pg.length} …`);await doPage(i)}catch(e){log("Error: "+e);$('#run').disabled=false;return}}
