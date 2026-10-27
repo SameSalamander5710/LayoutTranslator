@@ -18,6 +18,7 @@ image = "0.25"
 imageproc = "0.25"
 ab_glyph = "0.2"
 base64 = "0.22"
+futures-util = "0.3"       # runs several translation requests at once
 pdfium-render = "0.8"   # binds to a pdfium library shipped in resources/pdfium
 
 [profile.dev.package."*"]

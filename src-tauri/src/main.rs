@@ -87,7 +87,7 @@ async fn sample_colors(path: String, bbox: [f32; 4]) -> Result<([u8; 3], [u8; 3]
 }
 
 #[tauri::command]
-async fn test_connection(endpoint: String) -> Result<String, String> { pipeline::test_connection(&endpoint).await }
+async fn test_connection(endpoint: String) -> Result<pipeline::ConnInfo, String> { pipeline::test_connection(&endpoint).await }
 
 // Renders the translated page. Returns a PNG data URL for preview; also writes `out` when given.
 fn pick_font(app: &AppHandle, lang: &str) -> std::path::PathBuf {

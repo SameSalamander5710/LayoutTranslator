@@ -1,5 +1,6 @@
 use ab_glyph::{FontArc, PxScale};
 use base64::Engine as _;
+use futures_util::stream::{self, StreamExt};
 use image::{DynamicImage, Rgb, RgbImage, Rgba};
 use imageproc::{drawing::{draw_filled_rect_mut, draw_text_mut, text_size}, rect::Rect};
 use oar_ocr::prelude::*;
@@ -244,9 +245,10 @@ pub struct TranslateOptions {
     pub glossary: String,     // one entry per line: `term = translation`; a line with only a term means "keep unchanged"
     pub instructions: String, // free text
     pub use_context: bool,    // send the whole page's text first, as context
+    pub max_parallel: usize,  // how many requests may run at once (llama-server -np); 1 = one at a time
 }
 impl Default for TranslateOptions {
-    fn default() -> Self { Self { tone: String::new(), glossary: String::new(), instructions: String::new(), use_context: true } }
+    fn default() -> Self { Self { tone: String::new(), glossary: String::new(), instructions: String::new(), use_context: true, max_parallel: 1 } }
 }
 
 /// Parses the glossary box. Separators: `=`, `=>`, `->`, `→` or a tab. Blank lines and lines starting with `#` are ignored.
@@ -301,11 +303,11 @@ fn prefix(target: &str, o: &TranslateOptions, page_text: &str) -> Vec<serde_json
     v
 }
 
-async fn call(prefix: &[serde_json::Value], texts: &[&str], base: &str) -> Result<Vec<String>, String> {
+async fn call(client: &reqwest::Client, prefix: &[serde_json::Value], texts: &[&str], base: &str) -> Result<Vec<String>, String> {
     let mut messages = prefix.to_vec();
     messages.push(serde_json::json!({"role": "user", "content": serde_json::to_string(texts).unwrap()}));
     let body = serde_json::json!({"model": "default", "temperature": 0.2, "messages": messages});
-    let rq = reqwest::Client::new().post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body);
+    let rq = client.post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body);
     let r = rq.send().await.map_err(|e| format!("Cannot reach {base}: {e}"))?;
     if !r.status().is_success() { return Err(format!("Endpoint returned HTTP {}", r.status())); }
     let j: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
@@ -314,8 +316,14 @@ async fn call(prefix: &[serde_json::Value], texts: &[&str], base: &str) -> Resul
     serde_json::from_str::<Vec<String>>(c).map_err(|e| format!("Model did not return a JSON array: {e}"))
 }
 
-/// Checks that the server answers at `base` (e.g. http://127.0.0.1:8080/v1). Returns a short status line.
-pub async fn test_connection(base: &str) -> Result<String, String> {
+/// Result of the "Test connection" button.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnInfo { pub message: String, pub slots: Option<u32>, pub warning: Option<String> }
+
+/// Checks that the server answers at `base` (e.g. http://127.0.0.1:8080/v1). llama-server's `/props` page, when available,
+/// also tells how many parallel slots it was started with (-np) and how many tokens of context each slot has.
+pub async fn test_connection(base: &str) -> Result<ConnInfo, String> {
     let base = base.trim().trim_end_matches('/');
     if !(base.starts_with("http://") || base.starts_with("https://")) { return Err("URL must start with http:// or https://".into()); }
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
@@ -327,36 +335,85 @@ pub async fn test_connection(base: &str) -> Result<String, String> {
     if !r.status().is_success() { return Err(format!("Server answered HTTP {}. Check that the URL ends with /v1", r.status())); }
     let j: serde_json::Value = r.json().await.unwrap_or_default();
     let id = j["data"][0]["id"].as_str().or(j["models"][0]["model"].as_str()).or(j["models"][0]["name"].as_str());
-    Ok(match id { Some(id) => format!("Connected. Model: {id}"), None => "Connected.".to_string() })
+    let mut message = match id { Some(id) => format!("Connected. Model: {id}"), None => "Connected.".to_string() };
+    let (mut slots, mut warning) = (None, None);
+    let root = base.strip_suffix("/v1").unwrap_or(base);
+    if let Ok(r) = client.get(format!("{root}/props")).send().await {
+        if let Ok(p) = r.json::<serde_json::Value>().await {
+            slots = p["total_slots"].as_u64().map(|n| n as u32);
+            let ctx = p["default_generation_settings"]["n_ctx"].as_u64();
+            if let Some(n) = slots { message.push_str(&format!(" · {n} slot{}", if n == 1 { "" } else { "s" })); }
+            if let Some(c) = ctx {
+                message.push_str(&format!(" · {c} tokens per slot"));
+                if c < 3500 { warning = Some(format!("only {c} tokens per slot. Page context may not fit: start llama-server with a larger -c (about 4096 x -np)")); }
+            }
+        }
+    }
+    Ok(ConnInfo { message, slots, warning })
+}
+
+/// Translates one chunk of strings. If the request fails (for example the page context does not fit into a slot's
+/// context window) it is retried without the page text; if the model returns the wrong number of strings, the chunk is
+/// translated one string at a time.
+async fn translate_chunk(client: &reqwest::Client, pre: &[serde_json::Value], pre_min: &[serde_json::Value], texts: &[String], base: &str) -> Result<Vec<String>, String> {
+    let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
+    let mut used = pre;
+    let mut r = call(client, used, &refs, base).await;
+    if r.is_err() && pre.len() > pre_min.len() { used = pre_min; r = call(client, used, &refs, base).await; }
+    match r {
+        Ok(v) if v.len() == refs.len() => Ok(v),
+        _ => {
+            let mut v = vec![];
+            for t in &refs { v.push(call(client, used, &[t], base).await?.into_iter().next().unwrap_or_default()); }
+            Ok(v)
+        }
+    }
 }
 
 /// Translates the blocks of ONE page. The model first sees the whole page's text as context (if enabled), then the
-/// strings to translate, in batches. `only` limits translation to those block ids (the others are left as they are).
+/// strings to translate. `only` limits translation to those block ids (the others are left as they are).
+/// With `max_parallel` > 1 the page is cut into small chunks (about two per slot) and up to `max_parallel` requests run at
+/// once; each request carries the same context, so the results do not depend on the order they finish in.
 pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: &TranslateOptions, only: Option<&[u32]>) -> Result<(), String> {
+    let par = opts.max_parallel.clamp(1, 16);
     let page_text = blocks.iter().map(|b| b.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
     let pre = prefix(target, opts, &page_text);
+    let pre_min = prefix(target, &TranslateOptions { use_context: false, ..opts.clone() }, &page_text);
     let idx: Vec<usize> = blocks.iter().enumerate()
         .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or(true, |o| o.contains(&b.id))).map(|(i, _)| i).collect();
+    let total: usize = idx.iter().map(|&i| blocks[i].text.len()).sum();
     let mut batches: Vec<Vec<usize>> = vec![];
-    let (mut cur, mut chars) = (vec![], 0usize);
-    for &i in &idx {
-        let n = blocks[i].text.len();
-        if !cur.is_empty() && (cur.len() >= BATCH_MAX_BLOCKS || chars + n > BATCH_MAX_CHARS) { batches.push(std::mem::take(&mut cur)); chars = 0; }
-        cur.push(i); chars += n;
+    if par > 1 && total > 0 {
+        // About two chunks per slot, balanced by text length, never bigger than one sequential batch would be.
+        let mut n = (par * 2).min(idx.len()).max(total.div_ceil(BATCH_MAX_CHARS)).max(idx.len().div_ceil(BATCH_MAX_BLOCKS)).min(idx.len());
+        if n > par { n = (n.div_ceil(par) * par).min(idx.len()); } // whole waves of `par` requests
+        let mut chunks: Vec<Vec<usize>> = vec![vec![]; n];
+        let mut cum = 0usize;
+        for &i in &idx {
+            let len = blocks[i].text.len();
+            chunks[(((cum + len / 2) * n) / total).min(n - 1)].push(i);
+            cum += len;
+        }
+        batches = chunks.into_iter().filter(|c| !c.is_empty()).collect();
+    } else {
+        let (mut cur, mut chars) = (vec![], 0usize);
+        for &i in &idx {
+            let n = blocks[i].text.len();
+            if !cur.is_empty() && (cur.len() >= BATCH_MAX_BLOCKS || chars + n > BATCH_MAX_CHARS) { batches.push(std::mem::take(&mut cur)); chars = 0; }
+            cur.push(i); chars += n;
+        }
+        if !cur.is_empty() { batches.push(cur); }
     }
-    if !cur.is_empty() { batches.push(cur); }
-    for batch in batches {
-        let texts: Vec<String> = batch.iter().map(|&i| blocks[i].text.clone()).collect();
-        let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
-        let out = match call(&pre, &refs, base).await {
-            Ok(v) if v.len() == refs.len() => v,
-            _ => { // batch failed or lost lines: retry one block at a time (same context prefix)
-                let mut v = vec![];
-                for t in &refs { v.push(call(&pre, &[t], base).await?.into_iter().next().unwrap_or_default()); }
-                v
-            }
-        };
-        for (&i, t) in batch.iter().zip(out) { blocks[i].translated = Some(t); }
+    let jobs: Vec<(Vec<usize>, Vec<String>)> = batches.into_iter().map(|b| { let t = b.iter().map(|&i| blocks[i].text.clone()).collect(); (b, t) }).collect();
+    let client = reqwest::Client::new();
+    let (client, pre, pre_min) = (&client, &pre, &pre_min);
+    let mut results = stream::iter(jobs).map(|(b, texts)| async move {
+        let out = translate_chunk(client, pre, pre_min, &texts, base).await?;
+        Ok::<_, String>((b, out))
+    }).buffer_unordered(par);
+    while let Some(r) = results.next().await {
+        let (b, out) = r?;
+        for (&i, t) in b.iter().zip(out) { blocks[i].translated = Some(t); }
     }
     Ok(())
 }
@@ -826,7 +883,7 @@ mod tests {
 
     #[test]
     fn prompt_uses_only_relevant_glossary_terms() {
-        let o = TranslateOptions { tone: "formal".into(), glossary: "Haus = house\nKatze = cat".into(), instructions: "Legal text.".into(), use_context: true };
+        let o = TranslateOptions { tone: "formal".into(), glossary: "Haus = house\nKatze = cat".into(), instructions: "Legal text.".into(), use_context: true, ..Default::default() };
         let p = system_prompt("English", &o, "Das Haus ist groß.");
         assert!(p.contains("formal tone") && p.contains("Haus => house") && p.contains("Legal text."));
         assert!(!p.contains("Katze"));

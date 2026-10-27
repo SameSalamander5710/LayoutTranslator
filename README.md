@@ -6,7 +6,7 @@ Drop in an image, get it back with the text translated in the same layout. OCR i
 1. Install Rust (rustup, MSVC), Visual Studio Build Tools "Desktop development with C++", Node LTS.
 2. Edit `scripts/models.json`: fill in the three English model URLs (see `_help`). Then `npm install` and `npm run models` (also fetches pdfium and the font).
 3. Create icons once: `npx tauri icon path\to\any-square.png`.
-4. `llama-server -m your-model.gguf --port 8080`, then `npm run tauri dev`.
+4. `llama-server -m your-model.gguf --port 8080 -np 4 -c 16384`, then `npm run tauri dev`. `-np` is the number of requests the server handles at once; set the same number under "Parallel requests" in the app (the Test connection button reads it for you). The context size `-c` is shared between the slots, so use about 4096 per slot.
 
 ## Languages
 The English model ships in `models/en` next to the app. To add one, create `models/<name>/` there with `det.onnx`, `rec.onnx`, `dict.txt` and restart. The Windows installer is per-user so that folder is writable.

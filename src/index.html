@@ -54,7 +54,7 @@ button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;
 .clist{position:fixed;z-index:50;margin:0;padding:4px 0;list-style:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);overflow:auto}
 .clist li{padding:5px 10px;cursor:pointer}.clist li.act{background:var(--acc);color:var(--accink)}.clist li[aria-selected=true]{font-weight:600}
 .clist li.sep{height:1px;margin:4px 8px;padding:0;background:var(--line);cursor:default}
-.st{font-size:12px;color:var(--mute);align-self:center}.st.ok{color:var(--ok)}.st.bad{color:#b3261e}
+.st{font-size:12px;color:var(--mute);align-self:center}.st.warn{color:#b26a00}.st.ok{color:var(--ok)}.st.bad{color:#b3261e}
 </style></head>
 <body>
 <header><h1>Layout Translator</h1><span>Local OCR (PaddleOCR) + any OpenAI-compatible endpoint, e.g. llama.cpp</span></header>
@@ -78,6 +78,7 @@ button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;
   <h2 style="margin-top:18px">2. Translation endpoint</h2>
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
   <div class="row" style="margin-top:6px"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
+  <div class="row" style="margin-top:8px;align-items:center"><label for="par" style="margin:0">Parallel requests</label><input id="par" type="number" min="1" max="16" value="1" style="width:64px"><span class="hint" style="font-size:12px">llama-server <code>-np</code></span></div>
   <label for="tgt">Translate into</label><div class="combo"><input id="tgt" value="English" role="combobox" aria-expanded="false" aria-controls="tgtList" aria-autocomplete="list" autocomplete="off" spellcheck="false"><button type="button" id="tgtBtn" class="cbtn" aria-label="Show languages" tabindex="-1">▾</button><ul id="tgtList" class="clist" role="listbox" aria-label="Languages" hidden></ul></div>
   <details class="opts" id="opts">
     <summary>Translation options <span id="optsInfo" class="st"></span></summary>
@@ -125,10 +126,11 @@ const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
 const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
 const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=u});
 const setStep=(k,st,t=st)=>{const li=$(`[data-s=${k}]`);li.className=st;li.lastChild.textContent=t};
-for(const k of ["url","tgt","mode","tone","gloss","instr"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
+for(const k of ["url","tgt","mode","tone","gloss","instr","par"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
 // ---- Translation options: stored locally, sent with every translate call ----
+$('#par').addEventListener('change',()=>{const n=Math.min(16,Math.max(1,parseInt($('#par').value)||1));$('#par').value=n;localStorage.setItem("lt_par",n)});
 $('#ctx').checked=localStorage.getItem("lt_ctx")!=="0";$('#ctx').addEventListener('change',e=>localStorage.setItem("lt_ctx",e.target.checked?"1":"0"));
-const opts=()=>({tone:$('#tone').value,glossary:$('#gloss').value,instructions:$('#instr').value,useContext:$('#ctx').checked});
+const opts=()=>({tone:$('#tone').value,glossary:$('#gloss').value,instructions:$('#instr').value,useContext:$('#ctx').checked,maxParallel:Math.min(16,Math.max(1,parseInt($('#par').value)||1))});
 function optsInfo(){const o=opts(),n=o.glossary.split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length,a=[];
   if(o.tone)a.push(o.tone);if(n)a.push(n+(n===1?' term':' terms'));if(o.instructions.trim())a.push('instructions');if(!o.useContext)a.push('no page context');
   $('#optsInfo').textContent=a.length?'· '+a.join(', '):''}
@@ -229,7 +231,8 @@ async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
     if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
     else if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`)}
   setStep('ocr','done',"done");setStep('tr','run',lab);
-  if(p.blocks.length)p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts()});
+  if(p.blocks.length){const o=opts();if(o.maxParallel>1)log(`${lab}: translating ${p.blocks.length} blocks, up to ${o.maxParallel} at once`);
+    p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:o})}
   setStep('tr','done',"done");setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
 $('#run').onclick=async()=>{$('#run').disabled=true;
   for(let i=0;i<pg.length;i++){try{log(`Page ${i+1}/${pg.length} …`);await doPage(i)}catch(e){log("Error: "+e);$('#run').disabled=false;return}}
@@ -240,7 +243,9 @@ $('#save').onclick=async()=>{const pdf=isPdf;
 $('#browse').onclick=async()=>{const p=await T.dialog.open({filters:[{name:"Images and PDF",extensions:["png","jpg","jpeg","webp","bmp","pdf"]}]});if(p)setDoc(p)};
 const setConn=(c,t)=>{const e=$('#conn');e.className="st "+c;e.textContent=t};
 $('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;
-  try{setConn("ok","✓ "+await inv('test_connection',{endpoint:$('#url').value}))}catch(e){setConn("bad","✗ "+e)}$('#test').disabled=false};
+  try{const r=await inv('test_connection',{endpoint:$('#url').value});
+    if(r.slots){const n=Math.min(16,r.slots);$('#par').value=n;localStorage.setItem("lt_par",n)} // use the server's -np value
+    setConn(r.warning?"warn":"ok","✓ "+r.message+(r.warning?" ⚠ "+r.warning:""))}catch(e){setConn("bad","✗ "+e)}$('#test').disabled=false};
 $('#url').addEventListener('input',()=>setConn("","Not tested"));
 $('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
 $('#prev').onclick=()=>go(cur-1);$('#next').onclick=()=>go(cur+1);
