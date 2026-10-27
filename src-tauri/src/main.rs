@@ -61,12 +61,22 @@ async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: St
 }
 
 #[tauri::command]
-async fn translate_blocks(mut blocks: Vec<Block>, target: String, endpoint: String, options: Option<pipeline::TranslateOptions>, only: Option<Vec<u32>>)
-    -> Result<Vec<Block>, String> {
+async fn translate_blocks(
+    cache: tauri::State<'_, pipeline::TranslationCache>,
+    mut blocks: Vec<Block>,
+    target: String,
+    endpoint: String,
+    options: Option<pipeline::TranslateOptions>,
+    only: Option<Vec<u32>>,
+) -> Result<TranslateOut, String> {
     let options = options.unwrap_or_default();
-    pipeline::translate(&mut blocks, &target, &endpoint, &options, only.as_deref()).await?;
-    Ok(blocks)
+    let (cached, missing) = pipeline::translate(&mut blocks, &target, &endpoint, &options, only.as_deref(), &cache).await?;
+    Ok(TranslateOut { blocks, cached, missing })
 }
+
+/// The page's blocks, plus how many came from the cache and how many got no translation (they keep their source text).
+#[derive(Serialize)]
+struct TranslateOut { blocks: Vec<Block>, cached: usize, missing: usize }
 
 // Box editing: read the text of a box the user drew (selectable text first, then OCR) ...
 #[tauri::command]
@@ -148,6 +158,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineCache::default())
+        .manage(pipeline::TranslationCache::default())
         .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, read_region, sample_colors, test_connection, render_page, open_document, preview, export_pdf])
         .run(tauri::generate_context!())
         .expect("error while running app");

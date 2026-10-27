@@ -89,6 +89,7 @@ button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;
     <label for="instr">Extra instructions</label>
     <textarea id="instr" rows="2" placeholder="e.g. This is a legal contract. Keep article numbers unchanged."></textarea>
     <label class="chk"><input type="checkbox" id="ctx" checked> Use the whole page as context</label>
+    <label class="chk"><input type="checkbox" id="reuse" checked> Reuse earlier results for unchanged pages</label>
   </details>
 </section>
 <section class="mid" aria-label="Page">
@@ -129,12 +130,12 @@ const setStep=(k,st,t=st)=>{const li=$(`[data-s=${k}]`);li.className=st;li.lastC
 for(const k of ["url","tgt","mode","tone","gloss","instr","par"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
 // ---- Translation options: stored locally, sent with every translate call ----
 $('#par').addEventListener('change',()=>{const n=Math.min(16,Math.max(1,parseInt($('#par').value)||1));$('#par').value=n;localStorage.setItem("lt_par",n)});
-$('#ctx').checked=localStorage.getItem("lt_ctx")!=="0";$('#ctx').addEventListener('change',e=>localStorage.setItem("lt_ctx",e.target.checked?"1":"0"));
-const opts=()=>({tone:$('#tone').value,glossary:$('#gloss').value,instructions:$('#instr').value,useContext:$('#ctx').checked,maxParallel:Math.min(16,Math.max(1,parseInt($('#par').value)||1))});
+for(const k of ["ctx","reuse"]){$('#'+k).checked=localStorage.getItem("lt_"+k)!=="0";$('#'+k).addEventListener('change',e=>localStorage.setItem("lt_"+k,e.target.checked?"1":"0"))}
+const opts=()=>({tone:$('#tone').value,glossary:$('#gloss').value,instructions:$('#instr').value,useContext:$('#ctx').checked,reuseCache:$('#reuse').checked,maxParallel:Math.min(16,Math.max(1,parseInt($('#par').value)||1))});
 function optsInfo(){const o=opts(),n=o.glossary.split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length,a=[];
-  if(o.tone)a.push(o.tone);if(n)a.push(n+(n===1?' term':' terms'));if(o.instructions.trim())a.push('instructions');if(!o.useContext)a.push('no page context');
+  if(o.tone)a.push(o.tone);if(n)a.push(n+(n===1?' term':' terms'));if(o.instructions.trim())a.push('instructions');if(!o.useContext)a.push('no page context');if(!o.reuseCache)a.push('no result reuse');
   $('#optsInfo').textContent=a.length?'· '+a.join(', '):''}
-['tone','gloss','instr','ctx'].forEach(k=>$('#'+k).addEventListener('input',optsInfo));optsInfo();
+['tone','gloss','instr','ctx','reuse'].forEach(k=>$('#'+k).addEventListener('input',optsInfo));optsInfo();
 
 // ---- Box editing on the "Detected text" tab: select, move, resize, delete, add ----
 const HND=[['nw',0,0],['n',.5,0],['ne',1,0],['e',1,.5],['se',1,1],['s',.5,1],['sw',0,1],['w',0,.5]];
@@ -164,7 +165,9 @@ async function addBox(rect){const p=P();let b;
   syncBoxUi();list();render();retypeset(cur)}
 function delBox(){if(sel==null)return;const p=P();p.blocks=p.blocks.filter(b=>b.id!==sel);sel=null;syncBoxUi();list();render();retypeset(cur)}
 async function retranslate(id){const i=cur,p=pg[i];log(`Translating block ${id} …`);
-  try{p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts(),only:[id]});if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}}
+  try{const r=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts(),only:[id]});p.blocks=r.blocks;
+    if(r.missing)log(`Block ${id} got no translation. Try again, or check the server.`);
+    if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}}
 cv.addEventListener('pointerdown',e=>{if(view!=='boxes'||e.button!==0||!P().ocr)return;const[x,y]=ptr(e);
   if(adding)drag={kind:'add',x0:x,y0:y,rect:[x,y,0,0]};
   else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox]}}
@@ -232,7 +235,9 @@ async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
     else if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`)}
   setStep('ocr','done',"done");setStep('tr','run',lab);
   if(p.blocks.length){const o=opts();if(o.maxParallel>1)log(`${lab}: translating ${p.blocks.length} blocks, up to ${o.maxParallel} at once`);
-    p.blocks=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:o})}
+    const r=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:o});p.blocks=r.blocks;
+    if(r.cached)log(`${lab}: ${r.cached} of ${p.blocks.length} blocks reused from an earlier run`);
+    if(r.missing)log(`${lab}: ${r.missing} block(s) got no translation and keep their source text (retry them in the Text blocks tab)`)}
   setStep('tr','done',"done");setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
 $('#run').onclick=async()=>{$('#run').disabled=true;
   for(let i=0;i<pg.length;i++){try{log(`Page ${i+1}/${pg.length} …`);await doPage(i)}catch(e){log("Error: "+e);$('#run').disabled=false;return}}

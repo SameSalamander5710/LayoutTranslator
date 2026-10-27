@@ -8,6 +8,7 @@ use oar_ocr::oarocr::OAROCR;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 pub const PDF_DPI: f32 = 200.0;
@@ -246,9 +247,10 @@ pub struct TranslateOptions {
     pub instructions: String, // free text
     pub use_context: bool,    // send the whole page's text first, as context
     pub max_parallel: usize,  // how many requests may run at once (llama-server -np); 1 = one at a time
+    pub reuse_cache: bool,    // reuse the results of an earlier run of the same, unchanged page
 }
 impl Default for TranslateOptions {
-    fn default() -> Self { Self { tone: String::new(), glossary: String::new(), instructions: String::new(), use_context: true, max_parallel: 1 } }
+    fn default() -> Self { Self { tone: String::new(), glossary: String::new(), instructions: String::new(), use_context: true, max_parallel: 1, reuse_cache: true } }
 }
 
 /// Parses the glossary box. Separators: `=`, `=>`, `->`, `→` or a tab. Blank lines and lines starting with `#` are ignored.
@@ -307,8 +309,8 @@ async fn call(client: &reqwest::Client, prefix: &[serde_json::Value], texts: &[&
     let mut messages = prefix.to_vec();
     messages.push(serde_json::json!({"role": "user", "content": serde_json::to_string(texts).unwrap()}));
     let body = serde_json::json!({"model": "default", "temperature": 0.2, "messages": messages});
-    let rq = client.post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body);
-    let r = rq.send().await.map_err(|e| format!("Cannot reach {base}: {e}"))?;
+    let r = client.post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body).send().await
+        .map_err(|e| format!("Cannot reach {base}: {e}"))?;
     if !r.status().is_success() { return Err(format!("Endpoint returned HTTP {}", r.status())); }
     let j: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
     let c = j["choices"][0]["message"]["content"].as_str().ok_or("Response had no message content")?;
@@ -359,7 +361,7 @@ async fn translate_chunk(client: &reqwest::Client, pre: &[serde_json::Value], pr
     let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
     let mut used = pre;
     let mut r = call(client, used, &refs, base).await;
-    if r.is_err() && pre.len() > pre_min.len() { used = pre_min; r = call(client, used, &refs, base).await; }
+    if r.is_err() && used.len() > pre_min.len() { used = pre_min; r = call(client, used, &refs, base).await; }
     match r {
         Ok(v) if v.len() == refs.len() => Ok(v),
         _ => {
@@ -370,17 +372,57 @@ async fn translate_chunk(client: &reqwest::Client, pre: &[serde_json::Value], pr
     }
 }
 
-/// Translates the blocks of ONE page. The model first sees the whole page's text as context (if enabled), then the
-/// strings to translate. `only` limits translation to those block ids (the others are left as they are).
+/// Memory of finished translations, so running an unchanged page again costs no model time. It lives in memory only (gone
+/// when the app closes). The key covers the whole page, never single lines: the same line can translate differently in a
+/// different scene (see `cache_key`).
+#[derive(Default)]
+pub struct TranslationCache(Mutex<HashMap<String, HashMap<u32, String>>>);
+const CACHE_MAX_PAGES: usize = 256;
+
+/// Identifies "this page, translated this way": every block's id and text plus everything that shapes the result (target
+/// language, server, model, tone, glossary, instructions, whether page context is sent). Box positions and colours are
+/// left out, so moving or resizing a box does not forget the translations.
+fn cache_key(blocks: &[Block], target: &str, base: &str, model: &str, o: &TranslateOptions) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (target, base.trim().trim_end_matches('/'), model, &o.tone, &o.glossary, &o.instructions, o.use_context).hash(&mut h);
+    for b in blocks { (b.id, b.text.trim()).hash(&mut h); }
+    format!("{:016x}", h.finish())
+}
+
+/// The model the server has loaded (best effort), so that switching models on the same address does not serve old results.
+async fn model_id(client: &reqwest::Client, base: &str) -> String {
+    let r = client.get(format!("{}/models", base.trim_end_matches('/'))).timeout(std::time::Duration::from_secs(3)).send().await;
+    let Ok(r) = r else { return String::new() };
+    let j: serde_json::Value = r.json().await.unwrap_or_default();
+    j["data"][0]["id"].as_str().or(j["models"][0]["model"].as_str()).unwrap_or("").to_string()
+}
+
+/// Translates the blocks of ONE page. Returns (blocks taken from the cache, blocks that got no translation).
+/// The model first sees the whole page's text as context (if enabled), then the numbered lines to translate.
+/// `only` limits translation to those block ids; those are always translated afresh, never taken from the cache.
 /// With `max_parallel` > 1 the page is cut into small chunks (about two per slot) and up to `max_parallel` requests run at
 /// once; each request carries the same context, so the results do not depend on the order they finish in.
-pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: &TranslateOptions, only: Option<&[u32]>) -> Result<(), String> {
+pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: &TranslateOptions, only: Option<&[u32]>, cache: &TranslationCache)
+    -> Result<(usize, usize), String> {
     let par = opts.max_parallel.clamp(1, 16);
+    let client = reqwest::Client::new();
+    let key = cache_key(blocks, target, base, &model_id(&client, base).await, opts);
+    let want: Vec<usize> = blocks.iter().enumerate()
+        .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or(true, |o| o.contains(&b.id))).map(|(i, _)| i).collect();
+    let (mut idx, mut cached) = (vec![], 0usize);
+    if opts.reuse_cache && only.is_none() {
+        let c = cache.0.lock().unwrap();
+        let hit = c.get(&key);
+        for &i in &want {
+            match hit.and_then(|m| m.get(&blocks[i].id)) { Some(t) => { blocks[i].translated = Some(t.clone()); cached += 1; } None => idx.push(i) }
+        }
+    } else {
+        idx = want;
+    }
+    if idx.is_empty() { return Ok((cached, 0)); }
     let page_text = blocks.iter().map(|b| b.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
     let pre = prefix(target, opts, &page_text);
     let pre_min = prefix(target, &TranslateOptions { use_context: false, ..opts.clone() }, &page_text);
-    let idx: Vec<usize> = blocks.iter().enumerate()
-        .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or(true, |o| o.contains(&b.id))).map(|(i, _)| i).collect();
     let total: usize = idx.iter().map(|&i| blocks[i].text.len()).sum();
     let mut batches: Vec<Vec<usize>> = vec![];
     if par > 1 && total > 0 {
@@ -405,17 +447,26 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
         if !cur.is_empty() { batches.push(cur); }
     }
     let jobs: Vec<(Vec<usize>, Vec<String>)> = batches.into_iter().map(|b| { let t = b.iter().map(|&i| blocks[i].text.clone()).collect(); (b, t) }).collect();
-    let client = reqwest::Client::new();
     let (client, pre, pre_min) = (&client, &pre, &pre_min);
     let mut results = stream::iter(jobs).map(|(b, texts)| async move {
         let out = translate_chunk(client, pre, pre_min, &texts, base).await?;
         Ok::<_, String>((b, out))
     }).buffer_unordered(par);
+    let mut fresh: Vec<(u32, String)> = vec![];
     while let Some(r) = results.next().await {
         let (b, out) = r?;
-        for (&i, t) in b.iter().zip(out) { blocks[i].translated = Some(t); }
+        for (&i, t) in b.iter().zip(out) {
+            blocks[i].translated = Some(t.clone());
+            fresh.push((blocks[i].id, t));
+        }
     }
-    Ok(())
+    let missing = idx.len() - fresh.len();
+    if !fresh.is_empty() {
+        let mut c = cache.0.lock().unwrap();
+        if c.len() >= CACHE_MAX_PAGES && !c.contains_key(&key) { c.clear(); }
+        c.entry(key).or_default().extend(fresh);
+    }
+    Ok((cached, missing))
 }
 
 // ---------- Box editing helpers ----------
@@ -895,5 +946,27 @@ mod tests {
         assert_eq!(prefix("English", &o, "Hallo Welt").len(), 3); // system + context + acknowledgement
         o.use_context = false;
         assert_eq!(prefix("English", &o, "Hallo Welt").len(), 1);
+    }
+
+
+
+    fn cblock(id: u32, text: &str) -> Block {
+        Block { id, bbox: [0.0; 4], text: text.into(), translated: None, conf: 1.0, font_px: 10.0, fg: [0; 3], bg: [255; 3] }
+    }
+
+    #[test]
+    fn cache_key_follows_what_shapes_the_result() {
+        let o = TranslateOptions::default();
+        let b = vec![cblock(1, "Hallo"), cblock(2, "Welt")];
+        let k = cache_key(&b, "English", "http://x/v1", "m1", &o);
+        assert_eq!(k, cache_key(&b, "English", "http://x/v1/", "m1", &o)); // trailing slash is not a difference
+        let mut moved = b.clone();
+        moved[0].bbox = [5.0, 5.0, 50.0, 20.0];
+        assert_eq!(k, cache_key(&moved, "English", "http://x/v1", "m1", &o)); // moving a box keeps the cache
+        assert_ne!(k, cache_key(&[cblock(1, "Hallo"), cblock(2, "Welt!")], "English", "http://x/v1", "m1", &o));
+        assert_ne!(k, cache_key(&b, "French", "http://x/v1", "m1", &o));
+        assert_ne!(k, cache_key(&b, "English", "http://x/v1", "m2", &o)); // another model
+        assert_ne!(k, cache_key(&b, "English", "http://x/v1", "m1", &TranslateOptions { tone: "formal".into(), ..o.clone() }));
+        assert_eq!(k, cache_key(&b, "English", "http://x/v1", "m1", &TranslateOptions { max_parallel: 8, ..o })); // speed settings do not matter
     }
 }
