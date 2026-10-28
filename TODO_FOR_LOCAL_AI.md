@@ -27,7 +27,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 ## D. PDF
 - [x] D1. Rasterisation uses pdfium at 200 DPI; loads from resources/pdfium with fallback. Needs runtime tests.
 - [x] D2. Using pdfium-render 0.8; writer unchanged - needs validation.
-- [ ] D3. Output PDFs are page images (text not selectable) and can be large; try lower JPEG quality or an optional "text layer" mode.
+- [ ] D3. Output PDFs hold one JPEG (quality 90) per page, so the text is not selectable. Still open: an optional text-layer mode.
 - [x] D4. Hybrid run: selectable PDF text is read with pdfium first, OCR only covers the rest (and is skipped on pages with no images). Still to do: rotated pages and non-zero crop boxes (see `page_text_layer`), and test on real-world PDFs (multi-column, tables, Type 3 fonts, text split into one segment per word).
 - [x] D5. Stop button (flag between steps plus `cancel_run`, which drops the request in progress) and a progress bar.
 
@@ -46,7 +46,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 ## G. Translation endpoint
 - [x] G1. Test connection button and status field added (`test_connection`, 5 s timeout, checks `GET {base}/models`).
 - [ ] G3. `"csp": null` in `tauri.conf.json` is a development setting. Write a strict CSP for release.
-- [ ] G4. Large pages: split block lists into batches so prompts fit the model's context.
+- [x] G4. Large pages are split into batches (`BATCH_MAX_BLOCKS`, `BATCH_MAX_CHARS`), and a chunk that fails is retried without the page context and then one block at a time.
 
 ## H. Tests
 - [x] H1. Unit tests cover `group()`, `wrap()`, `erase_patch()` and `write_pdf()` (the test checks the PDF structure: header, `startxref`, every xref entry, page sizes, one JPEG per page). A PDF made by `write_pdf` was also accepted by qpdf, pdfinfo and pypdf. Still open: reading a `write_pdf` file back with pdfium.
