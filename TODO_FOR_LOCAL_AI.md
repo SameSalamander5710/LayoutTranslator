@@ -40,7 +40,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [x] F1a. `wrap()` follows the Unicode line breaking rules (CJK breaks, no closing punctuation at a line start); overlong words are cut between grapheme clusters.
 - [ ] F1b. Shaping and right-to-left layout (Arabic, Hebrew, Indic scripts, Thai marks) are still missing. Consider `cosmic-text`; until then those target languages are not offered.
 - [ ] F2. Handle rotated or vertical text, and very small text (minimum readable size).
-- [ ] F3. Skip translating blocks that are only numbers, URLs or codes.
+- [x] F3. Blocks that are only numbers, URLs, e-mail addresses or codes are not sent to the model (`is_translatable`); a block the user retranslates by hand is always sent.
 - [ ] F4. Local models sometimes break the JSON-array reply (extra prose, reasoning tags). The parser (`extract_json_array`) now drops reasoning tags, fences and prose. Still open: constrained output (llama.cpp grammar or `response_format`).
 
 ## G. Translation endpoint

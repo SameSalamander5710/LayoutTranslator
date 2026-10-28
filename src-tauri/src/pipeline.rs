@@ -256,6 +256,23 @@ impl Default for TranslateOptions {
     fn default() -> Self { Self { tone: String::new(), glossary: String::new(), instructions: String::new(), use_context: true, max_parallel: 1, reuse_cache: true } }
 }
 
+/// False for text that a translation could only damage: numbers, dates, prices and symbols (no letters at all), URLs,
+/// e-mail addresses, and one-word codes with digits such as `A12-B34` or `ISO9001`. A word that happens to contain a
+/// digit (`10-Jahres-Plan`) and any text in a non-ASCII script (`第12章`) is still translated.
+pub fn is_translatable(text: &str) -> bool {
+    let t = text.trim();
+    if !t.chars().any(char::is_alphabetic) { return false; }
+    if t.chars().any(char::is_whitespace) { return true; }
+    let lower = t.to_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("www.") { return false; }
+    if let Some((user, host)) = t.split_once('@') { if !user.is_empty() && host.contains('.') && !host.ends_with('.') { return false; } }
+    if t.is_ascii() && t.chars().any(|c| c.is_ascii_digit()) {
+        // a code unless it holds a real word: a run of 4 or more letters that is not all capitals
+        return t.split(|c: char| !c.is_alphabetic()).any(|run| run.chars().count() >= 4 && run.chars().any(char::is_lowercase));
+    }
+    true
+}
+
 /// Parses the glossary box. Separators: `=`, `=>`, `->`, `→` or a tab. Blank lines and lines starting with `#` are ignored.
 pub fn parse_glossary(text: &str) -> Vec<(String, Option<String>)> {
     text.lines().filter_map(|l| {
@@ -442,8 +459,9 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
     let par = opts.max_parallel.clamp(1, 16);
     let client = http();
     let key = cache_key(blocks, target, base, &model_id(client, base).await, opts);
+    // Blocks that are only numbers, URLs, e-mail addresses or codes stay as they are. A block the user asks for by id is always translated.
     let want: Vec<usize> = blocks.iter().enumerate()
-        .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or(true, |o| o.contains(&b.id))).map(|(i, _)| i).collect();
+        .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or_else(|| is_translatable(&b.text), |o| o.contains(&b.id))).map(|(i, _)| i).collect();
     let (mut idx, mut cached) = (vec![], 0usize);
     if opts.reuse_cache && only.is_none() {
         let c = cache.0.lock().unwrap();
@@ -1161,6 +1179,17 @@ mod tests {
         assert_ne!(k, cache_key(&b, "English", "http://x/v1", "m2", &o)); // another model
         assert_ne!(k, cache_key(&b, "English", "http://x/v1", "m1", &TranslateOptions { tone: "formal".into(), ..o.clone() }));
         assert_eq!(k, cache_key(&b, "English", "http://x/v1", "m1", &TranslateOptions { max_parallel: 8, ..o })); // speed settings do not matter
+    }
+
+    #[test]
+    fn numbers_urls_and_codes_are_not_translated() {
+        for t in ["123", "12.5 %", "$1,234.00", "12/03/2024", "—", "3 – 4", "https://example.com/a", "WWW.Example.com", "me@example.com",
+                  "A12-B34", "ISO9001", "PN-2045-X", "  42  "] {
+            assert!(!is_translatable(t), "{t:?} should be skipped");
+        }
+        for t in ["Rechnung", "Invoice no. 5", "10-Jahres-Plan", "Modell3", "第12章", "Seite 3 von 4", "USB-C", "Visit https://example.com", "ä"] {
+            assert!(is_translatable(t), "{t:?} should be translated");
+        }
     }
 
     #[test]
