@@ -731,25 +731,60 @@ pub fn png_data_url(im: &DynamicImage) -> Result<String, String> {
 }
 
 // ---------- Inpainting (classical, no model) ----------
-// Masks the text strokes, then fills them by diffusing the surrounding colours inward.
-// Falls back to a flat background fill when the mask covers too much of the box.
+// Masks the text strokes (relative to a background colour that follows gradients), then fills them by diffusing the
+// surrounding colours inward. Falls back to painting the smooth background when the mask covers too much of the box.
 // TODO(local AI): optional upgrade path is a LaMa ONNX model for photos and textured backgrounds.
 /// Number of diffusion passes. The mask is only thin text strokes, so a pixel is never far from known colour; 20 passes
 /// differ from 60 by at most a few grey levels (see `fewer_passes_look_the_same`) and are three times faster.
 const RELAX_PASSES: usize = 20;
 
-/// What erasing one block changes in the page: a flat fill, or the inpainted colour of the masked pixels.
-enum Patch {
-    Fill { x0: i32, y0: i32, w: u32, h: u32, rgb: [u8; 3] },
-    Pixels(Vec<(u32, u32, [u8; 3])>),
-}
+/// What erasing one block changes in the page: the new colour of some pixels.
+struct Patch(Vec<(u32, u32, [u8; 3])>);
 impl Patch {
     fn apply(&self, im: &mut image::RgbaImage) {
-        match self {
-            Patch::Fill { x0, y0, w, h, rgb } => draw_filled_rect_mut(im, Rect::at(*x0, *y0).of_size(*w, *h), Rgba([rgb[0], rgb[1], rgb[2], 255])),
-            Patch::Pixels(px) => for (a, c, v) in px { im.put_pixel(*a, *c, Rgba([v[0], v[1], v[2], 255])); },
+        for (a, c, v) in &self.0 { im.put_pixel(*a, *c, Rgba([v[0], v[1], v[2], 255])); }
+    }
+}
+
+/// The colour of the page behind the text at every pixel of the crop, as a tilted plane `a + b*x + c*y` per colour channel,
+/// fitted by least squares to the pixels that are not text. A pixel counts as "not text" when it is close to the current
+/// fit; the fit is repeated three times with a tighter limit (150, 80, 40) and starts from the block's background colour.
+/// Text, and the text of a neighbouring box, is far from the fit, so it does not pull the plane. On a flat background the
+/// result is that one colour; on a linear gradient it follows the gradient.
+fn background_plane(im: &image::RgbaImage, x0: u32, y0: u32, cw: usize, ch: usize, bg: [u8; 3]) -> Vec<[f32; 3]> {
+    let at = |i: usize, j: usize| { let q = im.get_pixel(x0 + i as u32, y0 + j as u32); [q[0] as f64, q[1] as f64, q[2] as f64] };
+    let mut coef = [[0f64; 3]; 3]; // per channel: a, b, c
+    for k in 0..3 { coef[k][0] = bg[k] as f64; }
+    for tol in [150.0f64, 80.0, 40.0] {
+        let (mut n, mut sx, mut sy, mut sxx, mut sxy, mut syy) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
+        let (mut sv, mut sxv, mut syv) = ([0f64; 3], [0f64; 3], [0f64; 3]);
+        for j in 0..ch { for i in 0..cw {
+            let q = at(i, j);
+            let off: f64 = (0..3).map(|k| (q[k] - (coef[k][0] + coef[k][1] * i as f64 + coef[k][2] * j as f64)).abs()).sum();
+            if off > tol { continue; }
+            let (x, y) = (i as f64, j as f64);
+            n += 1.0; sx += x; sy += y; sxx += x * x; sxy += x * y; syy += y * y;
+            for k in 0..3 { sv[k] += q[k]; sxv[k] += x * q[k]; syv[k] += y * q[k]; }
+        } }
+        let m = [[n, sx, sy], [sx, sxx, sxy], [sy, sxy, syy]];
+        let det = |m: &[[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        let d = det(&m);
+        if n < 12.0 || d.abs() < 1e-6 { break; } // too few or too flat a set of pixels to fit a plane: keep the last fit
+        for k in 0..3 {
+            let rhs = [sv[k], sxv[k], syv[k]];
+            for col in 0..3 { // Cramer's rule: replace one column by the right-hand side
+                let mut mc = m; for r in 0..3 { mc[r][col] = rhs[r]; }
+                coef[k][col] = det(&mc) / d;
+            }
         }
     }
+    let mut out = Vec::with_capacity(cw * ch);
+    for j in 0..ch { for i in 0..cw {
+        let mut c = [0f32; 3];
+        for k in 0..3 { c[k] = ((coef[k][0] + coef[k][1] * i as f64 + coef[k][2] * j as f64) as f32).clamp(0.0, 255.0); }
+        out.push(c);
+    } }
+    out
 }
 
 /// Works out how to erase one block, reading the page but not changing it, so many blocks can be done at the same time.
@@ -764,10 +799,15 @@ fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<P
     if x1 <= x0 || y1 <= y0 { return None; }
     let (cw, ch) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
     let px = |i: usize, j: usize| (x0 as u32 + i as u32, y0 as u32 + j as u32);
+    let bgs = background_plane(im, x0 as u32, y0 as u32, cw, ch, b.bg);
+    // A pixel belongs to the text if it differs from the background behind it by more than a share of the text contrast.
+    // Dark text on a light page gives the old fixed limit of 60; faint text gets a lower limit, but never below 24 (noise).
+    let contrast: i32 = (0..3).map(|k| (b.fg[k] as i32 - b.bg[k] as i32).abs()).sum();
+    let limit = (contrast / 4).clamp(24, 60);
     let mut m = vec![false; cw * ch];
     for j in 0..ch { for i in 0..cw {
-        let (a, c) = px(i, j); let q = im.get_pixel(a, c);
-        m[j * cw + i] = (0..3).map(|k| (q[k] as i32 - b.bg[k] as i32).abs()).sum::<i32>() > 60; // TODO(local AI): make adaptive for gradients
+        let (a, c) = px(i, j); let q = im.get_pixel(a, c); let g = bgs[j * cw + i];
+        m[j * cw + i] = (0..3).map(|k| (q[k] as f32 - g[k]).abs()).sum::<f32>() > limit as f32;
     } }
     let mut md = m.clone(); // dilate by 2 px to swallow anti-aliased edges
     for j in 0..ch { for i in 0..cw { if m[j * cw + i] {
@@ -776,16 +816,18 @@ fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<P
             if a >= 0 && c >= 0 && (a as usize) < cw && (c as usize) < ch { md[c as usize * cw + a as usize] = true; }
         } }
     } } }
+    let to_px = |k: usize, v: [f32; 3]| { let (a, c) = px(k % cw, k / cw); (a, c, [v[0].round() as u8, v[1].round() as u8, v[2].round() as u8]) };
     let cover = md.iter().filter(|v| **v).count() as f32 / (cw * ch) as f32;
-    if cover > 0.45 { return Some(Patch::Fill { x0, y0, w: cw as u32, h: ch as u32, rgb: b.bg }); }
+    // Too much is marked as text (a photo, a pattern): inpainting would only smear it, so paint the smooth background instead.
+    if cover > 0.45 { return Some(Patch((0..cw * ch).map(|k| to_px(k, bgs[k])).collect())); }
     let mut buf: Vec<[f32; 3]> = (0..cw * ch).map(|k| {
-        if md[k] { [b.bg[0] as f32, b.bg[1] as f32, b.bg[2] as f32] } else { let (a, c) = px(k % cw, k / cw); let q = im.get_pixel(a, c); [q[0] as f32, q[1] as f32, q[2] as f32] }
+        if md[k] { bgs[k] } else { let (a, c) = px(k % cw, k / cw); let q = im.get_pixel(a, c); [q[0] as f32, q[1] as f32, q[2] as f32] }
     }).collect();
     for _ in 0..passes { for j in 0..ch { for i in 0..cw { if md[j * cw + i] {
         let n = [(i.saturating_sub(1), j), ((i + 1).min(cw - 1), j), (i, j.saturating_sub(1)), (i, (j + 1).min(ch - 1))];
         for k in 0..3 { buf[j * cw + i][k] = n.iter().map(|(a, c)| buf[c * cw + a][k]).sum::<f32>() / 4.0; }
     } } } }
-    Some(Patch::Pixels((0..cw * ch).filter(|&k| md[k]).map(|k| { let (a, c) = px(k % cw, k / cw); (a, c, [buf[k][0] as u8, buf[k][1] as u8, buf[k][2] as u8]) }).collect()))
+    Some(Patch((0..cw * ch).filter(|&k| md[k]).map(|k| to_px(k, buf[k])).collect()))
 }
 
 // ---------- PDF in (pdfium) ----------
@@ -1078,6 +1120,46 @@ mod tests {
         for p in &patches { p.apply(&mut par); }
         assert!(seq == par, "blocks that do not overlap must give the same page either way");
         assert!(seq != page, "something must have been erased");
+    }
+
+    #[test]
+    fn faint_text_is_erased() {
+        let font = test_font();
+        let mut im = image::RgbaImage::from_pixel(300, 60, Rgba([255, 255, 255, 255]));
+        draw_text_mut(&mut im, Rgba([236, 236, 236, 255]), 10, 10, PxScale::from(28.0), &font, "Faint text");
+        let b = Block { id: 1, bbox: [10.0, 10.0, 250.0, 36.0], text: "Faint text".into(), translated: None, conf: 1.0, font_px: 28.0, fg: [236; 3], bg: [255; 3] };
+        assert!(im.pixels().filter(|p| p[0] < 245).count() > 50, "the test page must hold faint text");
+        let mut out = im.clone();
+        erase_patch(&im, &b).unwrap().apply(&mut out);
+        let worst = out.pixels().map(|p| 255 - p[0] as i32).max().unwrap();
+        assert!(worst <= 3, "faint text is still visible (grey level {worst} below the page)");
+    }
+
+    #[test]
+    fn erase_follows_a_gradient() {
+        let font = test_font();
+        let g = |x: u32| (120 + x * 120 / 520) as i32; // 120 at the left edge, 240 at the right
+        let mut im = image::RgbaImage::new(520, 60);
+        for (x, _, p) in im.enumerate_pixels_mut() { let v = g(x) as u8; *p = Rgba([v, v, v, 255]); }
+        draw_text_mut(&mut im, Rgba([10, 10, 10, 255]), 10, 10, PxScale::from(28.0), &font, "Gradient text");
+        let b = Block { id: 1, bbox: [10.0, 10.0, 500.0, 36.0], text: "Gradient text".into(), translated: None, conf: 1.0, font_px: 28.0, fg: [10; 3], bg: [180; 3] };
+        let mut out = im.clone();
+        erase_patch(&im, &b).unwrap().apply(&mut out);
+        let worst = (0..60u32).flat_map(|y| (0..520u32).map(move |x| (x, y))).map(|(x, y)| (out.get_pixel(x, y)[0] as i32 - g(x)).abs()).max().unwrap();
+        assert!(worst <= 8, "the erased area differs from the gradient by {worst} grey levels");
+    }
+
+    #[test]
+    fn text_of_a_tightly_packed_neighbour_does_not_hide_the_text() {
+        let font = test_font();
+        let mut im = image::RgbaImage::from_pixel(400, 100, Rgba([255, 255, 255, 255]));
+        draw_text_mut(&mut im, Rgba([20, 20, 20, 255]), 10, 10, PxScale::from(28.0), &font, "First line of text");
+        draw_text_mut(&mut im, Rgba([20, 20, 20, 255]), 10, 42, PxScale::from(28.0), &font, "Second line of text");
+        let b = Block { id: 1, bbox: [10.0, 10.0, 380.0, 34.0], text: "First line of text".into(), translated: None, conf: 1.0, font_px: 28.0, fg: [20; 3], bg: [255; 3] };
+        let mut out = im.clone();
+        erase_patch(&im, &b).unwrap().apply(&mut out);
+        let worst = (0..400u32).flat_map(|x| (10..44u32).map(move |y| (x, y))).map(|(x, y)| 255 - out.get_pixel(x, y)[0] as i32).max().unwrap();
+        assert!(worst <= 3, "the first line is not fully erased (grey level {worst} below the page)");
     }
 
     #[test]

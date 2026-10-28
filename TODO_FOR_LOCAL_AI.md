@@ -33,7 +33,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 
 ## E. Inpainting
 - [x] E1. Classical diffusion fill implemented; needs fixture testing.
-- [ ] E2. The stroke threshold (`> 60`) assumes a flat background. Make it adaptive for gradients, and reconsider the 45% fallback to a flat fill.
+- [x] E2. The stroke threshold follows the text contrast (24 to 60 instead of a fixed 60), and the background colour is a tilted plane fitted to the non-text pixels, so gradients work. When too much looks like text (over 45%), the box is painted with that smooth background instead of a flat colour.
 - [ ] E3. Optional: replace it with a LaMa ONNX model through `ort` for photos and textures. Keep the classical fill as the fallback.
 
 ## F. Quality
