@@ -126,6 +126,13 @@ if(!window.__TAURI__){document.body.insertAdjacentHTML('afterbegin','<p role="al
 const T=window.__TAURI__,inv=(c,a)=>T.core.invoke(c,a),$=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const cv=$('#cv'),cx=cv.getContext('2d');
 let pg=[],cur=0,isPdf=false,view="orig",timer=null,sel=null,adding=false,drag=null;
+// `busy` is true while a run, a retranslation, an export or the opening of a document is in progress. Anything that would
+// replace the pages or the cancel token under a running task is refused (or disabled) while it is set.
+let busy=false,busyWhat="",saveReady=false;
+const busyMsg=()=>busyWhat==="run"?"Stop the run first.":"Please wait until the current task has finished.";
+function setBusy(on,what=""){busy=on;busyWhat=on?what:"";$('#browse').disabled=on;$('#mode').disabled=on;$$('button.sm').forEach(b=>b.disabled=on);
+  $('#run').disabled=on||!pg.length;$('#save').disabled=on||!saveReady;syncBoxUi()}
+const setSave=v=>{saveReady=v;$('#save').disabled=!v||busy};
 const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
 const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
 const errText=e=>String(e&&e.message||e);
@@ -160,7 +167,7 @@ function dragBox(d,x,y){const dx=x-d.x0,dy=y-d.y0,W=cv.width,H=cv.height,min=8;l
   if(d.k.includes('w'))bx=clamp(bx+dx,0,x1-min);if(d.k.includes('e'))x1=clamp(x1+dx,bx+min,W);
   if(d.k.includes('n'))by=clamp(by+dy,0,y1-min);if(d.k.includes('s'))y1=clamp(y1+dy,by+min,H);
   return[bx,by,x1-bx,y1-by]}
-function syncBoxUi(){const on=!!P().ocr;$('#addbox').disabled=!on;$('#addbox').textContent=adding?'Cancel':'+ Add box';$('#delbox').disabled=sel==null;
+function syncBoxUi(){const on=!!P().ocr;$('#addbox').disabled=!on||busy;$('#addbox').textContent=adding?'Cancel':'+ Add box';$('#delbox').disabled=sel==null||busy;
   $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it.'}
 function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i).catch(e=>log("Error: "+errText(e))),500)}
 async function refreshColors(b){try{const c=await inv('sample_colors',{path:P().path,bbox:b.bbox});b.fg=c[0];b.bg=c[1]}catch(e){}}
@@ -171,11 +178,11 @@ async function addBox(rect){const p=P();let b;
   log(b.text?`Added box ${b.id}: "${b.text.slice(0,40)}"`:`Added box ${b.id} (no text found; type it in the Text blocks tab).`);
   syncBoxUi();list();render();retypeset(cur)}
 function delBox(){if(sel==null)return;const p=P();p.blocks=p.blocks.filter(b=>b.id!==sel);sel=null;syncBoxUi();list();render();retypeset(cur)}
-async function retranslate(id){const i=cur,p=pg[i];log(`Translating block ${id} …`);
+async function retranslate(id){if(busy)return log(busyMsg());const i=cur,p=pg[i];setBusy(true,"retranslate");log(`Translating block ${id} …`);
   try{const r=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts(),only:[id]});p.blocks=r.blocks;
     if(r.missing)log(`Block ${id} got no translation. Try again, or check the server.`);
-    if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}}
-cv.addEventListener('pointerdown',e=>{if(view!=='boxes'||e.button!==0||!P().ocr)return;const[x,y]=ptr(e);
+    if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}finally{setBusy(false)}}
+cv.addEventListener('pointerdown',e=>{if(view!=='boxes'||e.button!==0||!P().ocr||busy)return;const[x,y]=ptr(e);
   if(adding)drag={kind:'add',x0:x,y0:y,rect:[x,y,0,0]};
   else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox]}}
   cv.setPointerCapture(e.pointerId);syncBoxUi();render()});
@@ -236,24 +243,26 @@ function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":
     sv.oninput=()=>{b.text=sv.value;if(b.translated==null)retypeset(cur)};d.appendChild(sv);
     if(b.translated!=null){const t=document.createElement('textarea');t.value=b.translated;t.setAttribute('aria-label','Translation of block '+b.id);
       t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{try{await typeset(i);if(i===cur&&view!=='blocks')setView('out')}catch(e){log("Error: "+errText(e))}},400)};d.appendChild(t)}
-    const rb=document.createElement('button');rb.className="sm";rb.textContent=b.translated!=null?'Retranslate':'Translate';rb.onclick=()=>retranslate(b.id);d.appendChild(rb);
+    const rb=document.createElement('button');rb.className="sm";rb.textContent=b.translated!=null?'Retranslate':'Translate';rb.disabled=busy;rb.onclick=()=>retranslate(b.id);d.appendChild(rb);
     d.addEventListener('click',()=>{sel=b.id;$$('.blk').forEach(x=>x.classList.toggle('sel',x===d))});box.appendChild(d)})}
 const MODES={hybrid:"PDFs: selectable text is used directly, OCR reads only what is left (images, scans). Images: OCR.",
   ocr:"Everything is read with OCR, even if the PDF has selectable text.",
   text:"Only selectable PDF text is translated. Text inside images or scans is ignored, and no OCR runs."};
 function applyMode(){const m=$('#mode').value;$('#modeNote').textContent=MODES[m]||"";$('#lang').disabled=m==="text"}
 $('#mode').addEventListener('change',()=>{applyMode();
-  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.out=null});$('#save').disabled=true;
+  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.out=null});setSave(false);
   $$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});log("Detection method changed. Press Run all to detect again.");setView('orig');go(cur)});
 async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));sel=null;adding=false;const p=P();
   try{if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}))}catch(e){log("Error: could not show the page: "+errText(e))}
   $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";syncBoxUi();render();list()}
-async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
+async function setDoc(path){if(busy)return log(busyMsg());setBusy(true,"open");
+  try{await openDoc(path)}finally{setBusy(false)}}
+async function openDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
   try{pg=(await inv('open_document',{path})).map(p=>({path:p,blocks:[],orig:null,out:null,ocr:false}))}catch(e){return log("Error: "+e)}
   isPdf=/\.pdf$/i.test(path);
   $('#mode').querySelector('option[value=text]').disabled=!isPdf;
   if(!isPdf&&$('#mode').value==='text'){$('#mode').value='hybrid';applyMode();log("Selectable-text mode is only for PDFs; switched to Automatic.")}
-  $('#save').disabled=true;$('#run').disabled=false;zoom=1;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
+  setSave(false);zoom=1;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
 // Renders can finish in a different order than they started (typing fast). Only the newest request may set the preview.
 async function typeset(i){const p=pg[i],my=p.seq=(p.seq||0)+1;
   const img=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,lang:fontLang()}));
@@ -261,7 +270,7 @@ async function typeset(i){const p=pg[i],my=p.seq=(p.seq||0)+1;
 // Stop button: `stopReq` ends the run between steps; the Rust command `cancel_run` also drops a translation request in progress.
 let stopReq=false;class Stopped extends Error{}
 const chk=()=>{if(stopReq)throw new Stopped()};
-function running(on){$('#run').disabled=on;$('#stop').hidden=!on;$('#stop').disabled=false;$('#prog').hidden=!on;if(on)stopReq=false}
+function running(on){setBusy(on,"run");$('#stop').hidden=!on;$('#stop').disabled=false;$('#prog').hidden=!on;if(on)stopReq=false}
 async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
   chk();if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true;
     if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
@@ -278,15 +287,16 @@ $('#run').onclick=async()=>{running(true);$('#prog').max=pg.length;const failed=
       catch(e){if(e instanceof Stopped||String(e)==="Cancelled")throw e; // Stop still ends the whole run
         const why=String(e&&e.message||e);failed.push(`${i+1} (${why})`);log(`Page ${i+1} failed: ${why}`);
         $$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="failed"})}}
-    $('#prog').value=pg.length;$('#save').disabled=false;
+    $('#prog').value=pg.length;setSave(true);
     log(failed.length?`Done. ${failed.length} page(s) failed: ${failed.join(", ")}. Press Run all to try them again.`:"Done.")}
   catch(e){if(e instanceof Stopped||String(e)==="Cancelled"){$$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="stopped"});log("Stopped. Pages that were already finished are kept.")}
     else log("Error: "+e)}
   finally{running(false)}};
 $('#stop').onclick=()=>{stopReq=true;$('#stop').disabled=true;log("Stopping …");inv('cancel_run').catch(()=>{})};
-$('#save').onclick=async()=>{const pdf=isPdf;
-  const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
-  try{pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,lang:fontLang()}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,lang:fontLang()});log("Saved "+o)}catch(e){log("Error: "+e)}};
+$('#save').onclick=async()=>{if(busy)return log(busyMsg());const pdf=isPdf;setBusy(true,"export");
+  try{const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
+    pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,lang:fontLang()}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,lang:fontLang()});log("Saved "+o)}
+  catch(e){log("Error: "+e)}finally{setBusy(false)}};
 $('#browse').onclick=async()=>{const p=await T.dialog.open({filters:[{name:"Images and PDF",extensions:["png","jpg","jpeg","webp","bmp","pdf"]}]});if(p)setDoc(p)};
 const setConn=(c,t)=>{const e=$('#conn');e.className="st "+c;e.textContent=t};
 $('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;
@@ -297,7 +307,7 @@ $('#url').addEventListener('input',()=>setConn("","Not tested"));
 $('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
 $('#prev').onclick=()=>go(cur-1);$('#next').onclick=()=>go(cur+1);
 $$('.view button').forEach(b=>b.onclick=()=>setView(b.dataset.v));
-T.webview.getCurrentWebview().onDragDropEvent(e=>{const d=e.payload;$('#drop').classList.toggle('on',d.type==='over'||d.type==='enter');if(d.type==='drop'&&d.paths[0])setDoc(d.paths[0])});
+T.webview.getCurrentWebview().onDragDropEvent(e=>{const d=e.payload;$('#drop').classList.toggle('on',d.type==='over'||d.type==='enter');if(d.type==='drop'&&d.paths[0]){if(busy)log(busyMsg());else setDoc(d.paths[0])}});
 // ---- "Translate into" combo box: names matching the typed text first, a thin line, then every other language ----
 const LANGS=["English","Spanish","French","German","Italian","Portuguese","Dutch","Polish","Czech","Slovak","Hungarian","Romanian","Bulgarian","Ukrainian","Russian","Greek","Turkish","Vietnamese","Indonesian","Malay","Filipino","Chinese (Simplified)","Chinese (Traditional)","Japanese","Korean","Swedish","Norwegian","Danish","Finnish","Estonian","Latvian","Lithuanian","Croatian","Serbian","Slovenian","Catalan","Irish","Icelandic","Swahili"];
 (function(){const inp=$('#tgt'),ul=$('#tgtList'),btn=$('#tgtBtn');let items=[],act=-1;
