@@ -6,3 +6,4 @@ src-tauri/resources/fonts/*.ttf
 src-tauri/resources/pdfium/*
 
 opencode.json
+patches/

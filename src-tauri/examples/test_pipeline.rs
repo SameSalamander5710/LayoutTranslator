@@ -17,7 +17,7 @@ fn main() {
 fn usage() {
     eprintln!("modes:");
     eprintln!("  ocr <image> <model_dir> <out_prefix>");
-    eprintln!("  translate <blocks.json> <target> <endpoint> <out_blocks.json> [model] [key]");
+    eprintln!("  translate <blocks.json> <target> <endpoint> <out_blocks.json>");
     eprintln!("  render <image> <blocks.json> <font> <out.png>");
     eprintln!("  geom <font>");
     std::process::exit(2);
@@ -62,15 +62,13 @@ fn translate(a: &[String]) {
     if a.len() < 4 { usage(); }
     let blocks: Vec<Block> = serde_json::from_str(&std::fs::read_to_string(&a[0]).unwrap()).unwrap();
     let mut blocks = blocks;
-    // model and key are optional trailing args (empty for a local llama.cpp server).
-    // Kept optional so PowerShell 5.1 (which drops empty-string args) needs no `""`.
-    let model = a.get(4).map(|s| s.as_str()).unwrap_or("");
-    let key = a.get(5).map(|s| s.as_str()).unwrap_or("");
-    tauri::async_runtime::block_on(pipeline::translate(
+    let cache = pipeline::TranslationCache::default();
+    let (cached, missing) = tauri::async_runtime::block_on(pipeline::translate(
         &mut blocks,
-        &a[1], &a[2], model, key,
+        &a[1], &a[2], &pipeline::TranslateOptions::default(), None, &cache,
     ))
     .expect("translate failed");
+    println!("{cached} from cache, {missing} without translation");
     std::fs::write(&a[3], serde_json::to_string_pretty(&blocks).unwrap()).unwrap();
     for b in &blocks {
         println!("#{} {:?} => {:?}", b.id, b.text, b.translated);
