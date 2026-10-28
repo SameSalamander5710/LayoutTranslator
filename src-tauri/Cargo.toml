@@ -25,5 +25,8 @@ unicode-segmentation = "1" # grapheme clusters, for cutting a word that is wider
 rayon = "1.12"            # erases and lays out the blocks of a page on all CPU cores
 pdfium-render = "0.8"   # binds to a pdfium library shipped in resources/pdfium
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] } # runs the async tests (already in the tree through reqwest and tauri; MIT)
+
 [profile.dev.package."*"]
 opt-level = 3            # OCR is unusably slow at opt-level 0

@@ -14,6 +14,27 @@ use std::sync::{Arc, Mutex};
 
 pub const PDF_DPI: f32 = 200.0;
 pub type Engine = OAROCR;
+
+/// Locks a mutex even if another thread panicked while holding it. Both caches only hold finished entries, so their data
+/// is still valid after such a panic; with a plain `unwrap()` one panic would make every later call panic too, until the
+/// app is restarted.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> { m.lock().unwrap_or_else(|e| e.into_inner()) }
+
+/// The three files every OCR model folder needs.
+pub const MODEL_FILES: [&str; 3] = ["det.onnx", "rec.onnx", "dict.txt"];
+
+/// Names the first problem in an OCR model folder, or None when it is complete. An empty file counts as a problem: an
+/// interrupted download leaves one, and the OCR engine then fails with an error nobody can read.
+pub fn model_problem(dir: &Path) -> Option<String> {
+    for f in MODEL_FILES {
+        match std::fs::metadata(dir.join(f)) {
+            Ok(m) if m.is_file() && m.len() > 0 => {}
+            Ok(m) if m.is_file() => return Some(format!("{f} is empty")),
+            _ => return Some(format!("{f} is missing")),
+        }
+    }
+    None
+}
 /// Caches built OCR engines per model folder so only the first run pays the load cost.
 /// Cloning is cheap (it clones the inner `Arc`) and all clones share the same engines, so the app-wide cache can be
 /// moved into a blocking task.
@@ -40,7 +61,7 @@ fn ocr_lines(im: &RgbImage, dir: &Path, cache: &EngineCache) -> Result<Vec<Line>
     let p = |n: &str| dir.join(n).to_string_lossy().to_string();
     let key = dir.to_string_lossy().to_string();
     let engine = {
-        let mut m = cache.0.lock().unwrap();
+        let mut m = lock(&cache.0);
         match m.get(&key) {
             Some(e) => e.clone(),
             None => {
@@ -60,7 +81,8 @@ fn ocr_lines(im: &RgbImage, dir: &Path, cache: &EngineCache) -> Result<Vec<Line>
     };
     let res = engine.predict(vec![im.clone()]).map_err(|e| e.to_string())?;
     let mut lines = vec![];
-    for r in &res[0].text_regions {
+    let result = res.first().ok_or("The OCR engine returned no result")?;
+    for r in &result.text_regions {
         if let Some((t, c)) = r.text_with_confidence() {
             let bbox = &r.bounding_box;
             let x0 = bbox.x_min();
@@ -464,7 +486,7 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
         .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or_else(|| is_translatable(&b.text), |o| o.contains(&b.id))).map(|(i, _)| i).collect();
     let (mut idx, mut cached) = (vec![], 0usize);
     if opts.reuse_cache && only.is_none() {
-        let c = cache.0.lock().unwrap();
+        let c = lock(&cache.0);
         let hit = c.get(&key);
         for &i in &want {
             match hit.and_then(|m| m.get(&blocks[i].id)) { Some(t) => { blocks[i].translated = Some(t.clone()); cached += 1; } None => idx.push(i) }
@@ -517,7 +539,7 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
     }
     let missing = idx.len() - fresh.len();
     if !fresh.is_empty() {
-        let mut c = cache.0.lock().unwrap();
+        let mut c = lock(&cache.0);
         if c.len() >= CACHE_MAX_PAGES && !c.contains_key(&key) { c.clear(); }
         c.entry(key).or_default().extend(fresh);
     }
@@ -1309,5 +1331,39 @@ mod tests {
         assert_eq!(extract_json_array("[Note] Sure: [\"Hello\",\"World\"]").unwrap(), want); // a [ in the preamble
         assert!(extract_json_array("I cannot translate this.").is_err());
         assert!(extract_json_array("[\"cut off").is_err());
+    }
+
+    /// A fresh, empty folder under the system temp dir, removed again by the caller.
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("lt-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn model_problem_names_the_bad_file() {
+        let d = temp_dir("model");
+        assert_eq!(model_problem(&d).as_deref(), Some("det.onnx is missing"));
+        for f in MODEL_FILES { std::fs::write(d.join(f), b"x").unwrap(); }
+        assert_eq!(model_problem(&d), None);
+        std::fs::write(d.join("det.onnx"), b"").unwrap(); // what an interrupted download leaves
+        assert_eq!(model_problem(&d).as_deref(), Some("det.onnx is empty"));
+        std::fs::write(d.join("det.onnx"), b"x").unwrap();
+        std::fs::write(d.join("dict.txt"), b"").unwrap();
+        assert_eq!(model_problem(&d).as_deref(), Some("dict.txt is empty"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn a_poisoned_cache_lock_does_not_break_translate() {
+        let cache = TranslationCache::default();
+        // Panic on another thread while it holds the lock, which poisons the mutex.
+        let _ = std::thread::scope(|s| s.spawn(|| { let _g = cache.0.lock().unwrap(); panic!("poison the lock on purpose"); }).join());
+        assert!(cache.0.is_poisoned());
+        // Only numbers: nothing is sent to a model, but the cache lock is taken to look for earlier results.
+        let mut blocks = vec![Block { id: 1, bbox: [0.0, 0.0, 10.0, 10.0], text: "12345".into(), translated: None, conf: 1.0, font_px: 10.0, fg: [0; 3], bg: [255; 3] }];
+        let r = translate(&mut blocks, "English", "http://127.0.0.1:9/v1", &TranslateOptions::default(), None, &cache).await;
+        assert_eq!(r.unwrap(), (0, 0));
     }
 }

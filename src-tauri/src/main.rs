@@ -13,10 +13,15 @@ fn roots(app: &AppHandle) -> Vec<PathBuf> {
     if let Ok(d) = app.path().app_data_dir() { v.push(d.join("models")); }
     v
 }
-fn has_model(d: &Path) -> bool { ["det.onnx", "rec.onnx", "dict.txt"].iter().all(|f| d.join(f).exists()) }
+fn has_model(d: &Path) -> bool { pipeline::model_problem(d).is_none() }
 fn lang_dir(app: &AppHandle, lang: &str) -> Result<PathBuf, String> {
-    roots(app).into_iter().map(|r| r.join(lang)).find(|d| has_model(d))
-        .ok_or(format!("No model folder for '{lang}'. Expected models/{lang}/ with det.onnx, rec.onnx and dict.txt"))
+    let dirs: Vec<PathBuf> = roots(app).into_iter().map(|r| r.join(lang)).collect();
+    if let Some(d) = dirs.iter().find(|d| has_model(d)) { return Ok(d.clone()); }
+    // A folder exists but is incomplete: say which file is the problem instead of a vague "not found".
+    if let Some((d, why)) = dirs.iter().filter(|d| d.is_dir()).find_map(|d| pipeline::model_problem(d).map(|w| (d, w))) {
+        return Err(format!("The model folder {} cannot be used: {why}. Run `npm run models` again, or replace the file.", d.display()));
+    }
+    Err(format!("No model folder for '{lang}'. Expected models/{lang}/ with det.onnx, rec.onnx and dict.txt"))
 }
 
 #[tauri::command]
