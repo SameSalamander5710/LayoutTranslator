@@ -26,6 +26,7 @@ button.p{background:var(--acc);color:var(--accink);border-color:var(--acc);font-
 button:disabled{opacity:.45;cursor:default}
 button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+progress{width:100%;height:8px;margin-top:10px}
 .steps{list-style:none;margin:0;padding:0}
 .steps li{padding:6px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
 .steps li.done{color:var(--ok)}.steps li.run{color:var(--acc);font-weight:600}
@@ -113,7 +114,8 @@ button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;
     <li data-s="tr"><span>Translate</span><span>waiting</span></li>
     <li data-s="ty"><span>Erase and typeset</span><span>waiting</span></li>
   </ul>
-  <div class="row"><button class="p" id="run" disabled>Run all</button><button id="save" disabled>Save PNG</button></div>
+  <progress id="prog" value="0" max="1" hidden aria-label="Progress"></progress>
+  <div class="row"><button class="p" id="run" disabled>Run all</button><button id="stop" hidden>Stop</button><button id="save" disabled>Save PNG</button></div>
   <div id="log" aria-live="polite"></div>
 </section>
 </main>
@@ -193,11 +195,17 @@ function setZoom(z){const st=$('#stage'),fx=(st.scrollLeft+st.clientWidth/2)/st.
   zoom=Math.min(8,Math.max(.25,z));applyZoom();st.scrollLeft=fx*st.scrollWidth-st.clientWidth/2;st.scrollTop=fy*st.scrollHeight-st.clientHeight/2}
 $('#zin').onclick=()=>setZoom(zoom*1.25);$('#zout').onclick=()=>setZoom(zoom/1.25);$('#zfit').onclick=()=>setZoom(1);
 new ResizeObserver(()=>applyZoom()).observe($('#stage'));
+// Box colour from the OCR confidence: red (nothing read / unsure) -> orange -> yellow -> green (sure). Scores of 0.5 and
+// below are fully red because OCR scores are mostly above 0.9. Lines from a PDF text layer have confidence 1 (green).
+const CONF_FLOOR=0.5;
+const confColor=c=>{if(!(c>0))return"hsl(0 85% 45%)";const t=Math.min(1,Math.max(0,(c-CONF_FLOOR)/(1-CONF_FLOOR)));return`hsl(${Math.round(t*120)} 85% 40%)`};
 function render(){if(view==="blocks")return;const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);applyZoom(false);return}
   cv.width=base.width;cv.height=base.height;cx.drawImage(base,0,0);applyZoom(false);
   if(view!=="boxes")return;
   const sc=dispScale(),lw=2/sc;
-  p.blocks.forEach(b=>{const on=b.id===sel,c=on?"#1f6feb":"#1f9d6b";cx.strokeStyle=c;cx.lineWidth=on?lw*1.5:lw;cx.strokeRect(...b.bbox);
+  p.blocks.forEach(b=>{const on=b.id===sel,c=confColor(b.conf);
+    if(on){cx.strokeStyle="#1f6feb";cx.lineWidth=lw*3.5;cx.strokeRect(...b.bbox)} // blue halo under the colour marks the selected box
+    cx.strokeStyle=c;cx.lineWidth=on?lw*1.5:lw;cx.strokeRect(...b.bbox);
     cx.fillStyle=c;cx.font=`bold ${12/sc}px sans-serif`;cx.fillText(b.id+(b.conf>0?" · "+Math.round(b.conf*100)+"%":""),b.bbox[0],b.bbox[1]-4/sc)});
   const s=selBlock();if(s){const r=5/sc;cx.fillStyle="#fff";cx.strokeStyle="#1f6feb";cx.lineWidth=lw;
     for(const[,fx,fy]of HND){const hx=s.bbox[0]+s.bbox[2]*fx,hy=s.bbox[1]+s.bbox[3]*fy;cx.fillRect(hx-r,hy-r,2*r,2*r);cx.strokeRect(hx-r,hy-r,2*r,2*r)}}
@@ -205,7 +213,7 @@ function render(){if(view==="blocks")return;const p=P(),base=view==="out"&&p.out
 function setView(v){view=v;$$('.view button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v));
   const bv=v==='blocks';$('#stage').hidden=bv;$('#blocksView').hidden=!bv;$$('#zoomctl button').forEach(b=>b.disabled=bv);$('#boxbar').hidden=v!=='boxes';if(v!=='boxes')adding=false;syncBoxUi();render()}
 function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":'<p class="note">Run the pipeline to see detected blocks.</p>';
-  bl.forEach(b=>{const d=document.createElement('div');d.className="blk"+(b.id===sel?" sel":"");
+  bl.forEach(b=>{const d=document.createElement('div');d.className="blk"+(b.id===sel?" sel":"");d.style.cssText=`border-left:4px solid ${confColor(b.conf)};padding-left:8px`;
     d.innerHTML=`<small>#${b.id} · ${b.conf>0?'conf '+Math.round(b.conf*100)+'%':'no text read, type it below'}</small>`;
     const sv=document.createElement('textarea');sv.className="src";sv.rows=2;sv.value=b.text;sv.setAttribute('aria-label','Source text of block '+b.id);
     sv.oninput=()=>{b.text=sv.value;if(b.translated==null)retypeset(cur)};d.appendChild(sv);
@@ -229,19 +237,27 @@ async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …")
   if(!isPdf&&$('#mode').value==='text'){$('#mode').value='hybrid';applyMode();log("Selectable-text mode is only for PDFs; switched to Automatic.")}
   $('#save').disabled=true;$('#run').disabled=false;zoom=1;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
 async function typeset(i){const p=pg[i];p.out=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,lang:fontLang()}))}
+// Stop button: `stopReq` ends the run between steps; the Rust command `cancel_run` also drops a translation request in progress.
+let stopReq=false;class Stopped extends Error{}
+const chk=()=>{if(stopReq)throw new Stopped()};
+function running(on){$('#run').disabled=on;$('#stop').hidden=!on;$('#stop').disabled=false;$('#prog').hidden=!on;if(on)stopReq=false}
 async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
-  if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true;
+  chk();if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true;
     if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
     else if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`)}
-  setStep('ocr','done',"done");setStep('tr','run',lab);
+  setStep('ocr','done',"done");chk();setStep('tr','run',lab);
   if(p.blocks.length){const o=opts();if(o.maxParallel>1)log(`${lab}: translating ${p.blocks.length} blocks, up to ${o.maxParallel} at once`);
     const r=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:o});p.blocks=r.blocks;
     if(r.cached)log(`${lab}: ${r.cached} of ${p.blocks.length} blocks reused from an earlier run`);
     if(r.missing)log(`${lab}: ${r.missing} block(s) got no translation and keep their source text (retry them in the Text blocks tab)`)}
-  setStep('tr','done',"done");setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
-$('#run').onclick=async()=>{$('#run').disabled=true;
-  for(let i=0;i<pg.length;i++){try{log(`Page ${i+1}/${pg.length} …`);await doPage(i)}catch(e){log("Error: "+e);$('#run').disabled=false;return}}
-  $('#save').disabled=false;$('#run').disabled=false;log("Done.")};
+  setStep('tr','done',"done");chk();setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
+$('#run').onclick=async()=>{running(true);$('#prog').max=pg.length;
+  try{for(let i=0;i<pg.length;i++){$('#prog').value=i;log(`Page ${i+1}/${pg.length} …`);await doPage(i)}
+    $('#prog').value=pg.length;$('#save').disabled=false;log("Done.")}
+  catch(e){if(e instanceof Stopped||String(e)==="Cancelled"){$$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="stopped"});log("Stopped. Pages that were already finished are kept.")}
+    else log("Error: "+e)}
+  finally{running(false)}};
+$('#stop').onclick=()=>{stopReq=true;$('#stop').disabled=true;log("Stopping …");inv('cancel_run').catch(()=>{})};
 $('#save').onclick=async()=>{const pdf=isPdf;
   const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
   try{pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,lang:fontLang()}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,lang:fontLang()});log("Saved "+o)}catch(e){log("Error: "+e)}};

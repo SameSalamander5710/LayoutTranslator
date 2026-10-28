@@ -3,6 +3,7 @@ use layout_translator::pipeline::{self, Block, EngineCache};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+use tokio_util::sync::CancellationToken;
 
 // Model folders, searched in order. The first one sits next to the app (the "app folder");
 // the second is a per-user fallback in case the app folder is read-only.
@@ -59,9 +60,18 @@ async fn run_ocr(app: AppHandle, cache: tauri::State<'_, EngineCache>, path: Str
     Ok(Page { width: im.width(), height: im.height(), original: pipeline::png_data_url(&im)?, blocks, layer_lines, ocr_ran })
 }
 
+/// The cancel token of the translation request that is running. The Stop button fires it (see `cancel_run`).
+#[derive(Default)]
+struct RunControl(std::sync::Mutex<CancellationToken>);
+
+/// Stop button: ends the translation request in progress. The HTTP request is dropped, which closes its connection.
+#[tauri::command]
+fn cancel_run(ctl: tauri::State<'_, RunControl>) { ctl.0.lock().unwrap().cancel(); }
+
 #[tauri::command]
 async fn translate_blocks(
     cache: tauri::State<'_, pipeline::TranslationCache>,
+    ctl: tauri::State<'_, RunControl>,
     mut blocks: Vec<Block>,
     target: String,
     endpoint: String,
@@ -69,7 +79,11 @@ async fn translate_blocks(
     only: Option<Vec<u32>>,
 ) -> Result<TranslateOut, String> {
     let options = options.unwrap_or_default();
-    let (cached, missing) = pipeline::translate(&mut blocks, &target, &endpoint, &options, only.as_deref(), &cache).await?;
+    let token = { let mut t = ctl.0.lock().unwrap(); *t = CancellationToken::new(); t.clone() }; // a fresh token per request
+    let (cached, missing) = token
+        .run_until_cancelled(pipeline::translate(&mut blocks, &target, &endpoint, &options, only.as_deref(), &cache))
+        .await
+        .ok_or_else(|| "Cancelled".to_string())??;
     Ok(TranslateOut { blocks, cached, missing })
 }
 
@@ -158,7 +172,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineCache::default())
         .manage(pipeline::TranslationCache::default())
-        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, read_region, sample_colors, test_connection, render_page, open_document, preview, export_pdf])
+        .manage(RunControl::default())
+        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, cancel_run, read_region, sample_colors, test_connection, render_page, open_document, preview, export_pdf])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }
