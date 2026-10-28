@@ -2,7 +2,6 @@
 use layout_translator::pipeline::{self, Block, EngineCache};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 // Model folders, searched in order. The first one sits next to the app (the "app folder");
@@ -40,14 +39,14 @@ fn open_models_dir(app: AppHandle) -> Result<(), String> {
 struct Page { width: u32, height: u32, original: String, blocks: Vec<Block>, layer_lines: usize, ocr_ran: bool }
 
 #[tauri::command]
-async fn run_ocr(app: AppHandle, _cache: tauri::State<'_, EngineCache>, path: String, lang: String, mode: Option<String>) -> Result<Page, String> {
+async fn run_ocr(app: AppHandle, cache: tauri::State<'_, EngineCache>, path: String, lang: String, mode: Option<String>) -> Result<Page, String> {
     // mode: "hybrid" (default), "ocr" or "text" (see pipeline::detect). Text-only mode needs no OCR model.
     let mode = mode.unwrap_or_else(|| "hybrid".into());
     let dir = if mode == "text" { PathBuf::new() } else { lang_dir(&app, &lang)? };
     let p = PathBuf::from(&path);
     let p2 = p.clone();
     let dir2 = dir.clone();
-    let cache = Arc::new(EngineCache::default());
+    let cache = cache.inner().clone(); // the app-wide cache, so the OCR models are loaded once
     let (mut blocks, layer_lines, ocr_ran) = tauri::async_runtime::spawn_blocking(move || pipeline::detect(&p2, &dir2, &cache, &mode))
         .await
         .map_err(|e| e.to_string())??;
@@ -80,11 +79,11 @@ struct TranslateOut { blocks: Vec<Block>, cached: usize, missing: usize }
 
 // Box editing: read the text of a box the user drew (selectable text first, then OCR) ...
 #[tauri::command]
-async fn read_region(app: AppHandle, path: String, lang: String, mode: Option<String>, bbox: [f32; 4]) -> Result<Block, String> {
+async fn read_region(app: AppHandle, cache: tauri::State<'_, EngineCache>, path: String, lang: String, mode: Option<String>, bbox: [f32; 4]) -> Result<Block, String> {
     let mode = mode.unwrap_or_else(|| "hybrid".into());
     let dir = if mode == "text" { PathBuf::new() } else { lang_dir(&app, &lang)? };
     let p = PathBuf::from(&path);
-    let cache = Arc::new(EngineCache::default());
+    let cache = cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || pipeline::read_region(&p, &dir, &cache, bbox, &mode))
         .await
         .map_err(|e| e.to_string())?

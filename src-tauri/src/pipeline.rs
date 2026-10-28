@@ -14,8 +14,10 @@ use std::sync::{Arc, Mutex};
 pub const PDF_DPI: f32 = 200.0;
 pub type Engine = OAROCR;
 /// Caches built OCR engines per model folder so only the first run pays the load cost.
-#[derive(Default)]
-pub struct EngineCache(Mutex<HashMap<String, Arc<Engine>>>);
+/// Cloning is cheap (it clones the inner `Arc`) and all clones share the same engines, so the app-wide cache can be
+/// moved into a blocking task.
+#[derive(Default, Clone)]
+pub struct EngineCache(Arc<Mutex<HashMap<String, Arc<Engine>>>>);
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
