@@ -18,11 +18,11 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: ''
+            args: '-- --locked'  # cargo must use Cargo.lock as it is, so a release cannot pick up newer crates
           - platform: macos-latest          # Apple Silicon
-            args: '--target aarch64-apple-darwin'
-          - platform: macos-13              # Intel (verify this runner label is still available)
-            args: '--target x86_64-apple-darwin'
+            args: '--target aarch64-apple-darwin -- --locked'
+          - platform: macos-15-intel        # Intel. GitHub retired macos-13 on 2025-12-04; this label lasts until the macOS 15 image is retired (Fall 2027)
+            args: '--target x86_64-apple-darwin -- --locked'
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -42,9 +42,9 @@ jobs:
       # Download third-party runtime files (pdfium, ONNX Runtime, OCR models, fonts)
       # with a script you add later, e.g. scripts/fetch-assets.mjs, then reference
       # them under "bundle.resources" in src-tauri/tauri.conf.json.
-      - run: npm run models
+      - run: npm ci          # installs exactly what package-lock.json says
 
-      - run: npm install
+      - run: npm run models
 
       - uses: tauri-apps/tauri-action@v0
         env:

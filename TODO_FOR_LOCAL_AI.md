@@ -53,14 +53,14 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [ ] H2. One end-to-end test per fixture: image in, expected block text out (allow small OCR differences).
 
 ## I. Release
-- [ ] I1. Commit `Cargo.lock` and `package-lock.json`, switch the workflow back to `npm ci`.
-- [ ] I2. Check the macOS Intel runner label (`macos-13`) is still valid; run the workflow with `workflow_dispatch` and fix failures.
+- [x] I1. Both lock files are committed. The workflow uses `npm ci` and `cargo ... --locked`, so a release cannot pick up newer crates. Commit `src-tauri/Cargo.lock` whenever `Cargo.toml` changes, or the release build fails.
+- [ ] I2. The Intel runner label is now `macos-15-intel` (`macos-13` was retired on 2025-12-04). Still to do: run the workflow once with `workflow_dispatch` and fix failures. GitHub drops Intel macOS after the macOS 15 image is retired in Fall 2027.
 - [ ] I3. macOS: confirm pdfium and ONNX Runtime dylibs load from inside the `.app`, and document the unsigned-app workaround (or set up signing/notarization).
 - [ ] I4. Windows: document the SmartScreen warning, or set up code signing.
 - [x] I5. `PLAN.md` was updated to match the code (Google Translate dropped). Keep it in sync as things change.
 
-## I. Speed and UI (steps 0-9 of implementations.md)
-- [x] I1. `run_ocr` and `read_region` use the app-wide `EngineCache` (they used to build a new one per call, so the models were reloaded every time).
-- [x] I2. One shared HTTP client, no timeout (use the Stop button for a stuck server).
-- [x] I3. `fit_px` stops at 0.25 px and uses a glyph cache; `erase` uses 20 passes; erase and layout run in parallel (rayon).
-- [x] I4. Box colour follows OCR confidence (red, orange, yellow, green); Compare view with a divider.
+## J. Speed and UI (steps 0-9 of implementations.md)
+- [x] J1. `run_ocr` and `read_region` use the app-wide `EngineCache` (they used to build a new one per call, so the models were reloaded every time).
+- [x] J2. One shared HTTP client, no timeout (use the Stop button for a stuck server).
+- [x] J3. `fit_px` stops at 0.25 px and uses a glyph cache; `erase` uses 20 passes; erase and layout run in parallel (rayon).
+- [x] J4. Box colour follows OCR confidence (red, orange, yellow, green); Compare view with a divider.
