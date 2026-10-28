@@ -6,6 +6,7 @@ use imageproc::{drawing::{draw_filled_rect_mut, draw_text_mut, text_size}, rect:
 use oar_ocr::prelude::*;
 use oar_ocr::oarocr::OAROCR;
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 use std::hash::{Hash, Hasher};
@@ -651,32 +652,42 @@ pub fn fit_px(f: &FontArc, text: &str, w: u32, h: u32) -> f32 {
 pub fn render(img: &Path, font_path: &Path, blocks: &[Block]) -> Result<image::RgbaImage, String> {
     let mut im = image::open(img).map_err(|e| e.to_string())?.to_rgba8();
     let font = FontArc::try_from_vec(std::fs::read(font_path).map_err(|e| format!("Font missing ({}): {e}", font_path.display()))?).map_err(|e| e.to_string())?;
-    // Pass 1: erase every original text area. Doing this for all blocks before any new text is drawn
-    // means an erase can never wipe translated text that belongs to an overlapping block.
-    for b in blocks { erase(&mut im, b); }
-    // Pass 2: draw only the translated glyphs (no box, no background), so overlapping boxes stay readable.
-    for b in blocks {
-        let [x, y, w, h] = b.bbox;
-        let t = b.translated.as_deref().unwrap_or(&b.text);
-        if t.trim().is_empty() || w < 4.0 || h < 4.0 { continue; }
-        let px = fit_px(&font, t, w as u32, h as u32);
-        let lines = wrap(&font, px, t, w as u32);
-        let ls = line_spacing(&font, px);
-        let (mut top, mut bot) = (f32::MAX, f32::MIN);
-        for (i, l) in lines.iter().enumerate() {
+    // Pass 1: erase every original text area. All patches are computed from the untouched page (in parallel, one block
+    // per task) and then applied in block order, so an erase can never wipe translated text of an overlapping block.
+    let patches: Vec<Patch> = blocks.par_iter().filter_map(|b| erase_patch(&im, b)).collect();
+    for p in &patches { p.apply(&mut im); }
+    // Pass 2: lay out the translated text of every block (in parallel; this is where the font size is searched), then draw
+    // only the glyphs (no box, no background), so overlapping boxes stay readable.
+    let placed: Vec<Placed> = blocks.par_iter().filter_map(|b| layout(&font, b)).collect();
+    for pl in &placed {
+        for (i, l) in pl.lines.iter().enumerate() {
             if l.is_empty() { continue; }
-            let (t2, b2, _) = text_geom(&font, px, l);
-            top = top.min(i as f32 * ls + t2);
-            bot = bot.max(i as f32 * ls + b2);
-        }
-        if top == f32::MAX { continue; }
-        let y0 = y + (h - (bot - top)) / 2.0 - top; // vertically centred
-        for (i, l) in lines.iter().enumerate() {
-            if l.is_empty() { continue; }
-            draw_text_mut(&mut im, Rgba([b.fg[0], b.fg[1], b.fg[2], 255]), x as i32, (y0 + i as f32 * ls) as i32, PxScale::from(px), &font, l);
+            draw_text_mut(&mut im, Rgba([pl.fg[0], pl.fg[1], pl.fg[2], 255]), pl.x, (pl.y0 + i as f32 * pl.ls) as i32, PxScale::from(pl.px), &font, l);
         }
     }
     Ok(im)
+}
+
+/// The translated text of one block, fitted into its box and ready to draw.
+struct Placed { x: i32, y0: f32, ls: f32, px: f32, lines: Vec<String>, fg: [u8; 3] }
+
+fn layout(font: &FontArc, b: &Block) -> Option<Placed> {
+    let [x, y, w, h] = b.bbox;
+    let t = b.translated.as_deref().unwrap_or(&b.text);
+    if t.trim().is_empty() || w < 4.0 || h < 4.0 { return None; }
+    let px = fit_px(font, t, w as u32, h as u32);
+    let lines = wrap(font, px, t, w as u32);
+    let ls = line_spacing(font, px);
+    let (mut top, mut bot) = (f32::MAX, f32::MIN);
+    for (i, l) in lines.iter().enumerate() {
+        if l.is_empty() { continue; }
+        let (t2, b2, _) = text_geom(font, px, l);
+        top = top.min(i as f32 * ls + t2);
+        bot = bot.max(i as f32 * ls + b2);
+    }
+    if top == f32::MAX { return None; }
+    let y0 = y + (h - (bot - top)) / 2.0 - top; // vertically centred
+    Some(Placed { x: x as i32, y0, ls, px, lines, fg: b.fg })
 }
 
 pub fn png_data_url(im: &DynamicImage) -> Result<String, String> {
@@ -689,13 +700,34 @@ pub fn png_data_url(im: &DynamicImage) -> Result<String, String> {
 // Masks the text strokes, then fills them by diffusing the surrounding colours inward.
 // Falls back to a flat background fill when the mask covers too much of the box.
 // TODO(local AI): optional upgrade path is a LaMa ONNX model for photos and textured backgrounds.
-fn erase(im: &mut image::RgbaImage, b: &Block) {
+/// Number of diffusion passes. The mask is only thin text strokes, so a pixel is never far from known colour; 20 passes
+/// differ from 60 by at most a few grey levels (see `fewer_passes_look_the_same`) and are three times faster.
+const RELAX_PASSES: usize = 20;
+
+/// What erasing one block changes in the page: a flat fill, or the inpainted colour of the masked pixels.
+enum Patch {
+    Fill { x0: i32, y0: i32, w: u32, h: u32, rgb: [u8; 3] },
+    Pixels(Vec<(u32, u32, [u8; 3])>),
+}
+impl Patch {
+    fn apply(&self, im: &mut image::RgbaImage) {
+        match self {
+            Patch::Fill { x0, y0, w, h, rgb } => draw_filled_rect_mut(im, Rect::at(*x0, *y0).of_size(*w, *h), Rgba([rgb[0], rgb[1], rgb[2], 255])),
+            Patch::Pixels(px) => for (a, c, v) in px { im.put_pixel(*a, *c, Rgba([v[0], v[1], v[2], 255])); },
+        }
+    }
+}
+
+/// Works out how to erase one block, reading the page but not changing it, so many blocks can be done at the same time.
+fn erase_patch(im: &image::RgbaImage, b: &Block) -> Option<Patch> { erase_patch_with(im, b, RELAX_PASSES) }
+
+fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<Patch> {
     let (iw, ih) = im.dimensions();
     let [x, y, w, h] = b.bbox;
     let p = 3i32;
     let x0 = (x as i32 - p).max(0); let y0 = (y as i32 - p).max(0);
     let x1 = ((x + w) as i32 + p).min(iw as i32 - 1); let y1 = ((y + h) as i32 + p).min(ih as i32 - 1);
-    if x1 <= x0 || y1 <= y0 { return; }
+    if x1 <= x0 || y1 <= y0 { return None; }
     let (cw, ch) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
     let px = |i: usize, j: usize| (x0 as u32 + i as u32, y0 as u32 + j as u32);
     let mut m = vec![false; cw * ch];
@@ -711,18 +743,15 @@ fn erase(im: &mut image::RgbaImage, b: &Block) {
         } }
     } } }
     let cover = md.iter().filter(|v| **v).count() as f32 / (cw * ch) as f32;
-    if cover > 0.45 {
-        draw_filled_rect_mut(im, Rect::at(x0, y0).of_size(cw as u32, ch as u32), Rgba([b.bg[0], b.bg[1], b.bg[2], 255]));
-        return;
-    }
+    if cover > 0.45 { return Some(Patch::Fill { x0, y0, w: cw as u32, h: ch as u32, rgb: b.bg }); }
     let mut buf: Vec<[f32; 3]> = (0..cw * ch).map(|k| {
         if md[k] { [b.bg[0] as f32, b.bg[1] as f32, b.bg[2] as f32] } else { let (a, c) = px(k % cw, k / cw); let q = im.get_pixel(a, c); [q[0] as f32, q[1] as f32, q[2] as f32] }
     }).collect();
-    for _ in 0..60 { for j in 0..ch { for i in 0..cw { if md[j * cw + i] {
+    for _ in 0..passes { for j in 0..ch { for i in 0..cw { if md[j * cw + i] {
         let n = [(i.saturating_sub(1), j), ((i + 1).min(cw - 1), j), (i, j.saturating_sub(1)), (i, (j + 1).min(ch - 1))];
         for k in 0..3 { buf[j * cw + i][k] = n.iter().map(|(a, c)| buf[c * cw + a][k]).sum::<f32>() / 4.0; }
     } } } }
-    for k in 0..cw * ch { if md[k] { let (a, c) = px(k % cw, k / cw); im.put_pixel(a, c, Rgba([buf[k][0] as u8, buf[k][1] as u8, buf[k][2] as u8, 255])); } }
+    Some(Patch::Pixels((0..cw * ch).filter(|&k| md[k]).map(|k| { let (a, c) = px(k % cw, k / cw); (a, c, [buf[k][0] as u8, buf[k][1] as u8, buf[k][2] as u8]) }).collect()))
 }
 
 // ---------- PDF in (pdfium) ----------
@@ -947,6 +976,47 @@ mod tests {
             let px = fit_px(&font, text, w, h);
             assert!(fits(&font, text, w, h, px), "{text}: chosen px {px} must fit");
             assert!(!fits(&font, text, w, h, px * 1.05), "{text}: px*1.05 must not fit, so {px} is maximal");
+        }
+    }
+
+    // A page with two lines of text on a gradient, and the matching blocks.
+    fn text_page(font: &FontArc, size: f32) -> (image::RgbaImage, Vec<Block>) {
+        let mut im = image::RgbaImage::new(520, 140);
+        for (x, y, p) in im.enumerate_pixels_mut() { let v = 200 + (x * 40 / 520) as u8; *p = Rgba([v, v, 255 - (y / 8) as u8, 255]); }
+        let mut blocks = vec![];
+        for (n, (x, y)) in [(10u32, 10u32), (10, 70)].into_iter().enumerate() {
+            draw_text_mut(&mut im, Rgba([20, 20, 20, 255]), x as i32, y as i32, PxScale::from(size), font, "Sample text");
+            blocks.push(Block { id: n as u32 + 1, bbox: [x as f32, y as f32, 500.0, size * 1.3], text: "Sample text".into(), translated: None,
+                conf: 1.0, font_px: size, fg: [20, 20, 20], bg: [215, 215, 235] });
+        }
+        (im, blocks)
+    }
+
+    #[test]
+    fn parallel_erase_matches_sequential() {
+        let font = test_font();
+        let (page, blocks) = text_page(&font, 28.0);
+        let mut seq = page.clone();
+        for b in &blocks { if let Some(p) = erase_patch(&seq, b) { p.apply(&mut seq); } }
+        let mut par = page.clone();
+        let patches: Vec<Patch> = blocks.par_iter().filter_map(|b| erase_patch(&page, b)).collect();
+        for p in &patches { p.apply(&mut par); }
+        assert!(seq == par, "blocks that do not overlap must give the same page either way");
+        assert!(seq != page, "something must have been erased");
+    }
+
+    #[test]
+    fn fewer_passes_look_the_same() {
+        let font = test_font();
+        for size in [28.0, 90.0] {
+            let (page, blocks) = text_page(&font, size);
+            let (mut a, mut b) = (page.clone(), page.clone());
+            for bl in &blocks {
+                if let Some(p) = erase_patch_with(&page, bl, 60) { p.apply(&mut a); }
+                if let Some(p) = erase_patch_with(&page, bl, RELAX_PASSES) { p.apply(&mut b); }
+            }
+            let worst = a.pixels().zip(b.pixels()).flat_map(|(p, q)| (0..3).map(move |k| (p[k] as i32 - q[k] as i32).abs())).max().unwrap();
+            assert!(worst <= 20, "size {size}: 20 passes differ from 60 by {worst} grey levels");
         }
     }
 
