@@ -128,7 +128,11 @@ const cv=$('#cv'),cx=cv.getContext('2d');
 let pg=[],cur=0,isPdf=false,view="orig",timer=null,sel=null,adding=false,drag=null;
 const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
 const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
-const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=no;i.src=u});
+const errText=e=>String(e&&e.message||e);
+const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=()=>no(new Error("The page image could not be decoded"));i.src=u});
+// Anything that slips through (a promise nobody awaited, a timer callback) ends up in the log instead of vanishing.
+addEventListener('unhandledrejection',e=>log("Error: "+errText(e.reason)));
+addEventListener('error',e=>log("Error: "+errText(e.error||e.message)));
 const setStep=(k,st,t=st)=>{const li=$(`[data-s=${k}]`);li.className=st;li.lastChild.textContent=t};
 for(const k of ["url","tgt","mode","tone","gloss","instr","par"]){const v=localStorage.getItem("lt_"+k);if(v!==null)$("#"+k).value=v;$("#"+k).addEventListener("change",e=>localStorage.setItem("lt_"+k,e.target.value))}
 // ---- Translation options: stored locally, sent with every translate call ----
@@ -158,7 +162,7 @@ function dragBox(d,x,y){const dx=x-d.x0,dy=y-d.y0,W=cv.width,H=cv.height,min=8;l
   return[bx,by,x1-bx,y1-by]}
 function syncBoxUi(){const on=!!P().ocr;$('#addbox').disabled=!on;$('#addbox').textContent=adding?'Cancel':'+ Add box';$('#delbox').disabled=sel==null;
   $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it.'}
-function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i),500)}
+function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i).catch(e=>log("Error: "+errText(e))),500)}
 async function refreshColors(b){try{const c=await inv('sample_colors',{path:P().path,bbox:b.bbox});b.fg=c[0];b.bg=c[1]}catch(e){}}
 async function addBox(rect){const p=P();let b;
   try{b=await inv('read_region',{path:p.path,lang:$('#lang').value,mode:$('#mode').value,bbox:rect.map(v=>Math.round(v))})}
@@ -231,7 +235,7 @@ function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":
     const sv=document.createElement('textarea');sv.className="src";sv.rows=2;sv.value=b.text;sv.setAttribute('aria-label','Source text of block '+b.id);
     sv.oninput=()=>{b.text=sv.value;if(b.translated==null)retypeset(cur)};d.appendChild(sv);
     if(b.translated!=null){const t=document.createElement('textarea');t.value=b.translated;t.setAttribute('aria-label','Translation of block '+b.id);
-      t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{await typeset(i);if(i===cur&&view!=='blocks')setView('out')},400)};d.appendChild(t)}
+      t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{try{await typeset(i);if(i===cur&&view!=='blocks')setView('out')}catch(e){log("Error: "+errText(e))}},400)};d.appendChild(t)}
     const rb=document.createElement('button');rb.className="sm";rb.textContent=b.translated!=null?'Retranslate':'Translate';rb.onclick=()=>retranslate(b.id);d.appendChild(rb);
     d.addEventListener('click',()=>{sel=b.id;$$('.blk').forEach(x=>x.classList.toggle('sel',x===d))});box.appendChild(d)})}
 const MODES={hybrid:"PDFs: selectable text is used directly, OCR reads only what is left (images, scans). Images: OCR.",
@@ -241,7 +245,8 @@ function applyMode(){const m=$('#mode').value;$('#modeNote').textContent=MODES[m
 $('#mode').addEventListener('change',()=>{applyMode();
   if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.out=null});$('#save').disabled=true;
   $$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});log("Detection method changed. Press Run all to detect again.");setView('orig');go(cur)});
-async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));sel=null;adding=false;const p=P();if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}));
+async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));sel=null;adding=false;const p=P();
+  try{if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}))}catch(e){log("Error: could not show the page: "+errText(e))}
   $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";syncBoxUi();render();list()}
 async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
   try{pg=(await inv('open_document',{path})).map(p=>({path:p,blocks:[],orig:null,out:null,ocr:false}))}catch(e){return log("Error: "+e)}
@@ -249,7 +254,10 @@ async function setDoc(path){$('#log').textContent="";log("Opening "+path+" …")
   $('#mode').querySelector('option[value=text]').disabled=!isPdf;
   if(!isPdf&&$('#mode').value==='text'){$('#mode').value='hybrid';applyMode();log("Selectable-text mode is only for PDFs; switched to Automatic.")}
   $('#save').disabled=true;$('#run').disabled=false;zoom=1;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
-async function typeset(i){const p=pg[i];p.out=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,lang:fontLang()}))}
+// Renders can finish in a different order than they started (typing fast). Only the newest request may set the preview.
+async function typeset(i){const p=pg[i],my=p.seq=(p.seq||0)+1;
+  const img=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,lang:fontLang()}));
+  if(my===p.seq)p.out=img}
 // Stop button: `stopReq` ends the run between steps; the Rust command `cancel_run` also drops a translation request in progress.
 let stopReq=false;class Stopped extends Error{}
 const chk=()=>{if(stopReq)throw new Stopped()};
