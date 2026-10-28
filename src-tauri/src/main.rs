@@ -167,8 +167,13 @@ async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String, lang: Optio
     let lang = lang.unwrap_or_default();
     let font = pick_font(&app, &lang);
     let font = if font.exists() { font } else { app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf") };
-    let ims = pages.iter().map(|p| pipeline::render(Path::new(&p.path), &font, &p.blocks)).collect::<Result<Vec<_>, _>>()?;
-    pipeline::write_pdf(&ims, pipeline::PDF_DPI, Path::new(&out))
+    // One page at a time: render it, keep only its JPEG, and let the decoded image go before the next page is rendered.
+    let mut done = Vec::with_capacity(pages.len());
+    for p in &pages {
+        let im = pipeline::render(Path::new(&p.path), &font, &p.blocks)?;
+        done.push(pipeline::jpeg_page(&im, pipeline::PDF_DPI)?);
+    }
+    pipeline::write_pdf_pages(&done, Path::new(&out))
 }
 
 fn main() {

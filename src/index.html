@@ -218,7 +218,7 @@ new ResizeObserver(()=>applyZoom()).observe($('#stage'));
 // below are fully red because OCR scores are mostly above 0.9. Lines from a PDF text layer have confidence 1 (green).
 const CONF_FLOOR=0.5;
 const confColor=c=>{if(!(c>0))return"hsl(0 85% 45%)";const t=Math.min(1,Math.max(0,(c-CONF_FLOOR)/(1-CONF_FLOOR)));return`hsl(${Math.round(t*120)} 85% 40%)`};
-function render(){const cb=$('[data-v="cmp"]');if(cb)cb.disabled=!P().out;if(view==="blocks")return;const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);applyZoom(false);return}
+function render(){const cb=$('[data-v="cmp"]');if(cb)cb.disabled=!(P().out||P().typeset);if(view==="blocks")return;const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);applyZoom(false);return}
   cv.width=base.width;cv.height=base.height;cx.drawImage(base,0,0);applyZoom(false);
   if(view==="cmp"&&p.out){ // translation on the left of the divider, original on the right
     const x=split*base.width,sc=dispScale(),cy=base.height/2,r=16/sc;
@@ -235,7 +235,7 @@ function render(){const cb=$('[data-v="cmp"]');if(cb)cb.disabled=!P().out;if(vie
     for(const[,fx,fy]of HND){const hx=s.bbox[0]+s.bbox[2]*fx,hy=s.bbox[1]+s.bbox[3]*fy;cx.fillRect(hx-r,hy-r,2*r,2*r);cx.strokeRect(hx-r,hy-r,2*r,2*r)}}
   if(drag&&drag.kind==="add"){cx.setLineDash([6/sc,4/sc]);cx.strokeStyle="#1f6feb";cx.lineWidth=lw;cx.strokeRect(...drag.rect);cx.setLineDash([])}}
 function setView(v){view=v;$$('.view button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v));
-  const bv=v==='blocks';$('#stage').hidden=bv;$('#blocksView').hidden=!bv;$$('#zoomctl button').forEach(b=>b.disabled=bv);$('#boxbar').hidden=v!=='boxes';if(v!=='boxes')adding=false;cv.style.cursor=v==='cmp'?'ew-resize':'default';cv.style.touchAction=v==='cmp'?'none':'';syncBoxUi();render()}
+  const bv=v==='blocks';$('#stage').hidden=bv;$('#blocksView').hidden=!bv;$$('#zoomctl button').forEach(b=>b.disabled=bv);$('#boxbar').hidden=v!=='boxes';if(v!=='boxes')adding=false;cv.style.cursor=v==='cmp'?'ew-resize':'default';cv.style.touchAction=v==='cmp'?'none':'';syncBoxUi();render();ensureOut()}
 function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":'<p class="note">Run the pipeline to see detected blocks.</p>';
   bl.forEach(b=>{const d=document.createElement('div');d.className="blk"+(b.id===sel?" sel":"");d.style.cssText=`border-left:4px solid ${confColor(b.conf)};padding-left:8px`;
     d.innerHTML=`<small>#${b.id} · ${b.conf>0?'conf '+Math.round(b.conf*100)+'%':'no text read, type it below'}</small>`;
@@ -250,11 +250,17 @@ const MODES={hybrid:"PDFs: selectable text is used directly, OCR reads only what
   text:"Only selectable PDF text is translated. Text inside images or scans is ignored, and no OCR runs."};
 function applyMode(){const m=$('#mode').value;$('#modeNote').textContent=MODES[m]||"";$('#lang').disabled=m==="text"}
 $('#mode').addEventListener('change',()=>{applyMode();
-  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.out=null});setSave(false);
+  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.out=null;p.typeset=false});setSave(false);
   $$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});log("Detection method changed. Press Run all to detect again.");setView('orig');go(cur)});
+// Decoded page images are large (about 15 MB each for an A4 page), so only the current page and its two neighbours keep them.
+// `go` reloads a missing original; `ensureOut` redraws a missing translated page from the blocks.
+function trimMemory(){pg.forEach((p,i)=>{if(Math.abs(i-cur)>1){p.orig=null;p.out=null}})}
+async function ensureOut(){const i=cur,p=pg[i];if(!p||p.out||!p.typeset||p.regen||(view!=='out'&&view!=='cmp'))return;
+  p.regen=true;try{await typeset(i)}catch(e){log("Error: "+errText(e));return}finally{p.regen=false}
+  if(i===cur&&(view==='out'||view==='cmp'))render()}
 async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));sel=null;adding=false;const p=P();
   try{if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}))}catch(e){log("Error: could not show the page: "+errText(e))}
-  $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";syncBoxUi();render();list()}
+  $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";syncBoxUi();render();list();trimMemory();ensureOut()}
 async function setDoc(path){if(busy)return log(busyMsg());setBusy(true,"open");
   try{await openDoc(path)}finally{setBusy(false)}}
 async function openDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
@@ -266,7 +272,7 @@ async function openDoc(path){$('#log').textContent="";log("Opening "+path+" …"
 // Renders can finish in a different order than they started (typing fast). Only the newest request may set the preview.
 async function typeset(i){const p=pg[i],my=p.seq=(p.seq||0)+1;
   const img=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,lang:fontLang()}));
-  if(my===p.seq)p.out=img}
+  p.typeset=true;if(my===p.seq)p.out=img}
 // Stop button: `stopReq` ends the run between steps; the Rust command `cancel_run` also drops a translation request in progress.
 let stopReq=false;class Stopped extends Error{}
 const chk=()=>{if(stopReq)throw new Stopped()};
