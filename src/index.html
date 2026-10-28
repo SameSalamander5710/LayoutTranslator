@@ -286,7 +286,7 @@ $('#prev').onclick=()=>go(cur-1);$('#next').onclick=()=>go(cur+1);
 $$('.view button').forEach(b=>b.onclick=()=>setView(b.dataset.v));
 T.webview.getCurrentWebview().onDragDropEvent(e=>{const d=e.payload;$('#drop').classList.toggle('on',d.type==='over'||d.type==='enter');if(d.type==='drop'&&d.paths[0])setDoc(d.paths[0])});
 // ---- "Translate into" combo box: names matching the typed text first, a thin line, then every other language ----
-const LANGS=["English","Spanish","French","German","Italian","Portuguese","Dutch","Polish","Czech","Slovak","Hungarian","Romanian","Bulgarian","Ukrainian","Russian","Greek","Turkish","Arabic","Hebrew","Persian","Hindi","Bengali","Urdu","Tamil","Thai","Vietnamese","Indonesian","Malay","Filipino","Chinese (Simplified)","Chinese (Traditional)","Japanese","Korean","Swedish","Norwegian","Danish","Finnish","Estonian","Latvian","Lithuanian","Croatian","Serbian","Slovenian","Catalan","Irish","Icelandic","Swahili"];
+const LANGS=["English","Spanish","French","German","Italian","Portuguese","Dutch","Polish","Czech","Slovak","Hungarian","Romanian","Bulgarian","Ukrainian","Russian","Greek","Turkish","Vietnamese","Indonesian","Malay","Filipino","Chinese (Simplified)","Chinese (Traditional)","Japanese","Korean","Swedish","Norwegian","Danish","Finnish","Estonian","Latvian","Lithuanian","Croatian","Serbian","Slovenian","Catalan","Irish","Icelandic","Swahili"];
 (function(){const inp=$('#tgt'),ul=$('#tgtList'),btn=$('#tgtBtn');let items=[],act=-1;
   function build(){const q=inp.value.trim().toLowerCase(),lc=l=>l.toLowerCase();
     const starts=q?LANGS.filter(l=>lc(l).startsWith(q)):[],has=q?LANGS.filter(l=>!lc(l).startsWith(q)&&lc(l).includes(q)):[];

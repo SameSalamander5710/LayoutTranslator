@@ -119,7 +119,6 @@ fn pick_font(app: &AppHandle, lang: &str) -> std::path::PathBuf {
         "ja" | "jpn" | "japanese" => dir.join("NotoSansJP-Regular.ttf"),
         "zh" | "zh-cn" | "chinese" | "zh-tw" | "chinese-traditional" => dir.join("NotoSansSC-Regular.ttf"),
         "ko" | "korean" => dir.join("NotoSansKR-Regular.ttf"),
-        "ar" | "arabic" => dir.join("NotoSansArabic-Regular.ttf"),
         _ => dir.join("NotoSans-Regular.ttf"),
     }
 }

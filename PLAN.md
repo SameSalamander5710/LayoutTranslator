@@ -59,7 +59,7 @@ TextBlock { id, page, bbox:[x,y,w,h], text, translated?, conf, fontPx, weight, f
 
 ### Erase and typeset (implemented, first draft)
 - Erase: text strokes are masked and filled by diffusing the surrounding colours inward (classical inpainting, no model). Falls back to a flat background fill when the mask covers too much of the box. Optional later upgrade: LaMa ONNX for photos and textures.
-- Typeset: one bundled font (Noto Sans) drawn with `ab_glyph`/`imageproc`, shrink-to-fit inside the original box. Known gaps: CJK/Arabic fonts, no shaping, no wrapping without spaces.
+- Typeset: one bundled font (Noto Sans) drawn with `ab_glyph`/`imageproc`, shrink-to-fit inside the original box. Known gaps: no text shaping or right-to-left layout, so Arabic, Hebrew, Persian, Urdu, Hindi, Bengali, Tamil and Thai are not offered as target languages.
 
 ### Translation (implemented, first draft)
 One engine: any OpenAI-compatible `/v1/chat/completions` endpoint, meaning a local llama.cpp `llama-server` (base URL only; no API key or model name; a Test connection button checks `/models`). The prompt sends a JSON array of block texts and requires a JSON array back; if the count differs, blocks are retried one by one. Google Translate's unofficial endpoint was dropped (undocumented, rate-limited, grey area). Later: bundle `llama-server` as a Tauri sidecar so users need nothing running; add an engine trait if more providers are wanted.
