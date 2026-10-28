@@ -49,7 +49,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [ ] G4. Large pages: split block lists into batches so prompts fit the model's context.
 
 ## H. Tests
-- [ ] H1. Unit tests for `group()`, `wrap()`, `erase()` and `write_pdf()` (check the output parses with pdfium).
+- [x] H1. Unit tests cover `group()`, `wrap()`, `erase_patch()` and `write_pdf()` (the test checks the PDF structure: header, `startxref`, every xref entry, page sizes, one JPEG per page). A PDF made by `write_pdf` was also accepted by qpdf, pdfinfo and pypdf. Still open: reading a `write_pdf` file back with pdfium.
 - [ ] H2. One end-to-end test per fixture: image in, expected block text out (allow small OCR differences).
 
 ## I. Release

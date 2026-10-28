@@ -1123,6 +1123,31 @@ mod tests {
     }
 
     #[test]
+    fn write_pdf_makes_a_well_formed_file() {
+        let pages = [image::RgbaImage::from_pixel(200, 100, Rgba([10, 120, 220, 255])), image::RgbaImage::from_pixel(80, 120, Rgba([250, 250, 250, 255]))];
+        let path = std::env::temp_dir().join(format!("layout-translator-test-{}.pdf", std::process::id()));
+        write_pdf(&pages, 72.0, &path).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let find = |needle: &[u8], from: usize| data[from..].windows(needle.len()).position(|w| w == needle).map(|p| p + from);
+        assert!(data.starts_with(b"%PDF-1.4") && data.ends_with(b"%%EOF"));
+        // `startxref` must point at the table, and every table entry at its object (2 fixed objects + 3 per page = 8).
+        let sx = find(b"startxref\n", 0).unwrap() + "startxref\n".len();
+        let xref_at: usize = String::from_utf8_lossy(&data[sx..]).lines().next().unwrap().parse().unwrap();
+        let header = b"xref\n0 9\n0000000000 65535 f \n";
+        assert!(data[xref_at..].starts_with(header), "startxref does not point to the xref table");
+        for id in 1..=8usize {
+            let entry = &data[xref_at + header.len() + (id - 1) * 20..][..20];
+            let off: usize = std::str::from_utf8(&entry[..10]).unwrap().parse().unwrap();
+            assert!(data[off..].starts_with(format!("{id} 0 obj\n").as_bytes()), "xref entry {id} points to the wrong place");
+        }
+        assert!(find(b"/Count 2", 0).is_some());
+        assert!(find(b"MediaBox[0 0 200.00 100.00]", 0).is_some() && find(b"MediaBox[0 0 80.00 120.00]", 0).is_some(), "page size must follow the dpi");
+        let jpegs = data.windows(3).filter(|w| *w == [0xFF, 0xD8, 0xFF]).count();
+        assert_eq!(jpegs, 2, "one JPEG per page");
+    }
+
+    #[test]
     fn faint_text_is_erased() {
         let font = test_font();
         let mut im = image::RgbaImage::from_pixel(300, 60, Rgba([255, 255, 255, 255]));
