@@ -545,6 +545,9 @@ pub fn read_region(img: &Path, dir: &Path, cache: &EngineCache, bbox: [f32; 4], 
 pub fn wrap(f: &FontArc, px: f32, text: &str, maxw: u32) -> Vec<String> {
     let mut out = vec![];
     for para in text.split('\n') {
+        // Common case while fitting: the whole paragraph is one line, so skip the word-by-word measuring.
+        let joined = para.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text_size(PxScale::from(px), f, &joined).0 <= maxw { out.push(joined); continue; }
         let mut line = String::new();
         for w in para.split_whitespace() {
             if text_size(PxScale::from(px), f, w).0 > maxw {
@@ -567,24 +570,35 @@ pub fn wrap(f: &FontArc, px: f32, text: &str, maxw: u32) -> Vec<String> {
     out
 }
 
+/// Per-character data for ONE font size: glyph id, advance, and ink top/bottom (None if the glyph has no outline, like a
+/// space). Ink top/bottom do not depend on the x position, so one entry serves every occurrence of the character.
+type GlyphCache = HashMap<char, (ab_glyph::GlyphId, f32, Option<(f32, f32)>)>;
+
 // Ink extent of a line relative to the draw origin y, replicating imageproc's layout
 // (baseline at y + ascent). Returns (ink top, ink bottom, advance width).
-pub fn text_geom(f: &FontArc, px: f32, text: &str) -> (f32, f32, f32) {
+pub fn text_geom(f: &FontArc, px: f32, text: &str) -> (f32, f32, f32) { text_geom_cached(f, px, text, &mut GlyphCache::new()) }
+
+/// Same as `text_geom`, but looks glyphs up in `cache` (which must only ever be used with this `px`). Building outlines is
+/// the expensive part, and `fits` measures the same few characters over and over.
+fn text_geom_cached(f: &FontArc, px: f32, text: &str, cache: &mut GlyphCache) -> (f32, f32, f32) {
     use ab_glyph::{point, Font as _, GlyphId, ScaleFont};
     let font = f.as_scaled(PxScale::from(px));
     let mut w = 0f32;
     let (mut top, mut bot) = (f32::MAX, f32::MIN);
     let mut last: Option<GlyphId> = None;
     for c in text.chars() {
-        let gid = font.glyph_id(c);
-        let glyph = gid.with_scale_and_position(PxScale::from(px), point(w, font.ascent()));
-        w += font.h_advance(gid);
-        if let Some(g) = font.outline_glyph(glyph) {
+        let (gid, adv, ink) = *cache.entry(c).or_insert_with(|| {
+            let gid = font.glyph_id(c);
+            let glyph = gid.with_scale_and_position(PxScale::from(px), point(0.0, font.ascent()));
+            let ink = font.outline_glyph(glyph).map(|g| { let bb = g.px_bounds(); (bb.min.y, bb.max.y) });
+            (gid, font.h_advance(gid), ink)
+        });
+        w += adv;
+        if let Some((t, b)) = ink {
             if let Some(l) = last { w += font.kern(gid, l); }
             last = Some(gid);
-            let bb = g.px_bounds();
-            top = top.min(bb.min.y);
-            bot = bot.max(bb.max.y);
+            top = top.min(t);
+            bot = bot.max(b);
         }
     }
     if top == f32::MAX { (0.0, 0.0, w) } else { (top, bot, w) }
@@ -601,10 +615,11 @@ pub fn line_spacing(f: &FontArc, px: f32) -> f32 {
 fn fits(f: &FontArc, text: &str, w: u32, h: u32, px: f32) -> bool {
     let lines = wrap(f, px, text, w);
     let ls = line_spacing(f, px);
+    let mut cache = GlyphCache::new();
     let (mut top, mut bot) = (f32::MAX, f32::MIN);
     for (i, l) in lines.iter().enumerate() {
         if l.is_empty() { continue; }
-        let (t, b, wpx) = text_geom(f, px, l);
+        let (t, b, wpx) = text_geom_cached(f, px, l, &mut cache);
         if wpx > w as f32 { return false; }
         top = top.min(i as f32 * ls + t);
         bot = bot.max(i as f32 * ls + b);
@@ -615,7 +630,7 @@ fn fits(f: &FontArc, text: &str, w: u32, h: u32, px: f32) -> bool {
 
 // Largest px where the wrapped text fits inside w×h (min 3px, best effort).
 // Feasibility is monotonic in px (bigger px → wider lines → more lines → taller),
-// so binary search over [3, hi] finds the boundary. hi bounds px because even a
+// so bisection over [3, hi] (stopped at 0.25 px) finds the boundary. hi bounds px because even a
 // single line's ink must fit in h.
 pub fn fit_px(f: &FontArc, text: &str, w: u32, h: u32) -> f32 {
     const MIN_PX: f32 = 3.0;
@@ -626,7 +641,7 @@ pub fn fit_px(f: &FontArc, text: &str, w: u32, h: u32) -> f32 {
     let hi = (h as f32 / per_px).max(MIN_PX);
     if fits(f, text, w, h, hi) { return hi; }
     let (mut lo, mut hi) = (MIN_PX, hi);
-    for _ in 0..24 {
+    while hi - lo > 0.25 { // a quarter of a pixel is far below what is visible; 24 fixed steps were not needed
         let mid = (lo + hi) / 2.0;
         if fits(f, text, w, h, mid) { lo = mid; } else { hi = mid; }
     }
@@ -866,6 +881,21 @@ mod tests {
         assert!(lines.len() > 1);
         for l in &lines {
             assert!(text_size(PxScale::from(20.0), &font, l).0 <= 30);
+        }
+    }
+
+    #[test]
+    fn wrap_keeps_paragraphs_and_joins_spaces() {
+        let font = test_font();
+        assert_eq!(wrap(&font, 10.0, "hello   world\n\nbye", 1000), vec!["hello world", "", "bye"]);
+    }
+
+    #[test]
+    fn glyph_cache_gives_the_same_geometry() {
+        let font = test_font();
+        let mut cache = GlyphCache::new();
+        for line in ["Tag der Deutschen Einheit", "Einheit Einheit", "Agg gA", "", "  "] {
+            assert_eq!(text_geom_cached(&font, 23.0, line, &mut cache), text_geom(&font, 23.0, line), "line {line:?}");
         }
     }
 
