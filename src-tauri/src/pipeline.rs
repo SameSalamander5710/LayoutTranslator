@@ -543,28 +543,44 @@ pub fn read_region(img: &Path, dir: &Path, cache: &EngineCache, bbox: [f32; 4], 
 }
 
 // ---------- Erase + typeset ----------
+/// Cuts one word (no whitespace inside) at the places where a line may end, following the Unicode line breaking rules
+/// (UAX #14): Japanese and Chinese text can break between characters but never before closing punctuation like `、` or `。`,
+/// and Latin letters, digits and the like stay together. Thai has no break rules without a dictionary, so it comes back whole.
+fn break_segments(word: &str) -> Vec<&str> {
+    let (mut out, mut start) = (vec![], 0usize);
+    for (idx, _) in unicode_linebreak::linebreaks(word) {
+        if idx > start { out.push(&word[start..idx]); start = idx; }
+    }
+    if start < word.len() { out.push(&word[start..]); }
+    out
+}
+
+/// Fits `text` into lines of at most `maxw` pixels. Words are separated by spaces (several spaces count as one); inside a
+/// word, lines may also break where `break_segments` allows. A piece that is wider than a whole line is cut between
+/// grapheme clusters, so a letter never loses its accents or vowel marks.
 pub fn wrap(f: &FontArc, px: f32, text: &str, maxw: u32) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let width = |s: &str| text_size(PxScale::from(px), f, s).0;
     let mut out = vec![];
     for para in text.split('\n') {
-        // Common case while fitting: the whole paragraph is one line, so skip the word-by-word measuring.
+        // Common case while fitting: the whole paragraph is one line, so skip the piece-by-piece measuring.
         let joined = para.split_whitespace().collect::<Vec<_>>().join(" ");
-        if text_size(PxScale::from(px), f, &joined).0 <= maxw { out.push(joined); continue; }
+        if width(&joined) <= maxw { out.push(joined); continue; }
         let mut line = String::new();
-        for w in para.split_whitespace() {
-            if text_size(PxScale::from(px), f, w).0 > maxw {
-                // Word wider than the box: break it character by character.
+        for word in para.split_whitespace() {
+            for (n, seg) in break_segments(word).into_iter().enumerate() {
+                let cand = if line.is_empty() { seg.to_string() } else if n == 0 { format!("{line} {seg}") } else { format!("{line}{seg}") };
+                if width(&cand) <= maxw { line = cand; continue; }
                 if !line.is_empty() { out.push(std::mem::take(&mut line)); }
+                if width(seg) <= maxw { line = seg.to_string(); continue; }
+                // Wider than the box: break it between grapheme clusters.
                 let mut piece = String::new();
-                for ch in w.chars() {
-                    let t = format!("{piece}{ch}");
-                    if !piece.is_empty() && text_size(PxScale::from(px), f, &t).0 > maxw { out.push(std::mem::take(&mut piece)); }
-                    piece.push(ch);
+                for g in seg.graphemes(true) {
+                    if !piece.is_empty() && width(&format!("{piece}{g}")) > maxw { out.push(std::mem::take(&mut piece)); }
+                    piece.push_str(g);
                 }
                 line = piece;
-                continue;
             }
-            let t = if line.is_empty() { w.to_string() } else { format!("{line} {w}") };
-            if text_size(PxScale::from(px), f, &t).0 > maxw && !line.is_empty() { out.push(std::mem::take(&mut line)); line = w.to_string(); } else { line = t; }
         }
         out.push(line);
     }
@@ -911,6 +927,47 @@ mod tests {
         for l in &lines {
             assert!(text_size(PxScale::from(20.0), &font, l).0 <= 30);
         }
+    }
+
+    #[test]
+    fn wrap_japanese_keeps_punctuation_off_line_start() {
+        let font = test_font();
+        let text = "これは日本語の文章です。次の文章もあります、そして続きます。「引用」も入ります。";
+        let lines = wrap(&font, 20.0, text, 100);
+        assert!(lines.len() > 2, "{lines:?}");
+        assert_eq!(lines.concat(), text, "no character lost, no space added");
+        for l in &lines {
+            assert!(!l.starts_with(['、', '。', '」']), "line starts with closing punctuation: {l}");
+            assert!(text_size(PxScale::from(20.0), &font, l).0 <= 100, "line too wide: {l}");
+        }
+    }
+
+    #[test]
+    fn wrap_keeps_latin_words_whole_inside_cjk_text() {
+        let font = test_font();
+        let wa = text_size(PxScale::from(20.0), &font, "abcdefg").0;
+        let lines = wrap(&font, 20.0, "日本語のテストabcdefg日本語のテスト", wa + 5);
+        assert!(lines.iter().any(|l| l.contains("abcdefg")), "{lines:?}");
+        assert_eq!(lines.concat(), "日本語のテストabcdefg日本語のテスト");
+    }
+
+    #[test]
+    fn wrap_never_splits_thai_vowel_marks_from_their_letter() {
+        let font = test_font();
+        let text = "สวัสดีครับขอบคุณมาก";
+        let lines = wrap(&font, 20.0, text, 30);
+        assert!(lines.len() > 1);
+        assert_eq!(lines.concat(), text);
+        for l in &lines { assert!(!l.starts_with(|c: char| matches!(c, '\u{0E31}' | '\u{0E34}'..='\u{0E3A}' | '\u{0E47}'..='\u{0E4E}')), "mark starts a line: {l}"); }
+    }
+
+    #[test]
+    fn wrap_latin_text_as_before() {
+        let font = test_font();
+        let lines = wrap(&font, 20.0, "The Day of German Unity is a public holiday", 150);
+        assert_eq!(lines.join(" "), "The Day of German Unity is a public holiday");
+        assert!(lines.len() > 1);
+        for l in &lines { assert!(text_size(PxScale::from(20.0), &font, l).0 <= 150); }
     }
 
     #[test]
