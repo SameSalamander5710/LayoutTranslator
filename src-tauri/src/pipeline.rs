@@ -316,8 +316,22 @@ async fn call(client: &reqwest::Client, prefix: &[serde_json::Value], texts: &[&
     if !r.status().is_success() { return Err(format!("Endpoint returned HTTP {}", r.status())); }
     let j: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
     let c = j["choices"][0]["message"]["content"].as_str().ok_or("Response had no message content")?;
-    let c = c.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-    serde_json::from_str::<Vec<String>>(c).map_err(|e| format!("Model did not return a JSON array: {e}"))
+    extract_json_array(c)
+}
+
+/// Pulls the JSON array of strings out of a model reply. Reasoning models print `<think>...</think>` first, and chatty
+/// models add a sentence or a ``` fence around the array, so the reply is cleaned up in steps: drop the reasoning,
+/// strip fences, then (if it still does not parse) try every `[` up to the last `]` as the start of the array.
+pub fn extract_json_array(raw: &str) -> Result<Vec<String>, String> {
+    let s = match raw.rfind("</think>") { Some(p) => &raw[p + "</think>".len()..], None => raw };
+    let s = s.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    if let Ok(v) = serde_json::from_str::<Vec<String>>(s) { return Ok(v); }
+    if let Some(end) = s.rfind(']') {
+        for (start, _) in s.match_indices('[') {
+            if start < end { if let Ok(v) = serde_json::from_str::<Vec<String>>(&s[start..=end]) { return Ok(v); } }
+        }
+    }
+    Err(format!("Model did not return a JSON array. Reply began: {}", s.chars().take(80).collect::<String>()))
 }
 
 /// Result of the "Test connection" button.
@@ -356,19 +370,30 @@ pub async fn test_connection(base: &str) -> Result<ConnInfo, String> {
     Ok(ConnInfo { message, slots, warning })
 }
 
+/// A reply is only a translation if it is not blank (a blank would erase the block on the page).
+fn non_blank(s: String) -> Option<String> { if s.trim().is_empty() { None } else { Some(s) } }
+
 /// Translates one chunk of strings. If the request fails (for example the page context does not fit into a slot's
 /// context window) it is retried without the page text; if the model returns the wrong number of strings, the chunk is
-/// translated one string at a time.
-async fn translate_chunk(client: &reqwest::Client, pre: &[serde_json::Value], pre_min: &[serde_json::Value], texts: &[String], base: &str) -> Result<Vec<String>, String> {
+/// translated one string at a time. A string that still gets no usable reply comes back as `None` (the block keeps its
+/// source text) instead of failing the whole page; only if nothing at all could be translated is the error returned.
+async fn translate_chunk(client: &reqwest::Client, pre: &[serde_json::Value], pre_min: &[serde_json::Value], texts: &[String], base: &str)
+    -> Result<Vec<Option<String>>, String> {
     let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
     let mut used = pre;
     let mut r = call(client, used, &refs, base).await;
     if r.is_err() && used.len() > pre_min.len() { used = pre_min; r = call(client, used, &refs, base).await; }
     match r {
-        Ok(v) if v.len() == refs.len() => Ok(v),
+        Ok(v) if v.len() == refs.len() => Ok(v.into_iter().map(non_blank).collect()),
         _ => {
-            let mut v = vec![];
-            for t in &refs { v.push(call(client, used, &[t], base).await?.into_iter().next().unwrap_or_default()); }
+            let (mut v, mut last_err) = (vec![], None);
+            for t in &refs {
+                match call(client, used, &[t], base).await {
+                    Ok(r) => v.push(r.into_iter().next().and_then(non_blank)),
+                    Err(e) => { last_err = Some(e); v.push(None); }
+                }
+            }
+            if v.iter().all(Option::is_none) { if let Some(e) = last_err { return Err(e); } }
             Ok(v)
         }
     }
@@ -458,8 +483,10 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
     while let Some(r) = results.next().await {
         let (b, out) = r?;
         for (&i, t) in b.iter().zip(out) {
-            blocks[i].translated = Some(t.clone());
-            fresh.push((blocks[i].id, t));
+            if let Some(t) = t {
+                blocks[i].translated = Some(t.clone());
+                fresh.push((blocks[i].id, t));
+            }
         }
     }
     let missing = idx.len() - fresh.len();
@@ -970,5 +997,17 @@ mod tests {
         assert_ne!(k, cache_key(&b, "English", "http://x/v1", "m2", &o)); // another model
         assert_ne!(k, cache_key(&b, "English", "http://x/v1", "m1", &TranslateOptions { tone: "formal".into(), ..o.clone() }));
         assert_eq!(k, cache_key(&b, "English", "http://x/v1", "m1", &TranslateOptions { max_parallel: 8, ..o })); // speed settings do not matter
+    }
+
+    #[test]
+    fn json_array_extraction() {
+        let want = vec!["Hello".to_string(), "World".to_string()];
+        assert_eq!(extract_json_array(r#"["Hello","World"]"#).unwrap(), want);
+        assert_eq!(extract_json_array("```json\n[\"Hello\",\"World\"]\n```").unwrap(), want);
+        assert_eq!(extract_json_array("<think>The user wants [\"x\"]...</think>\n[\"Hello\",\"World\"]").unwrap(), want);
+        assert_eq!(extract_json_array("Here is the translated JSON:\n```json\n[\"Hello\",\"World\"]\n```\nHope this helps!").unwrap(), want);
+        assert_eq!(extract_json_array("[Note] Sure: [\"Hello\",\"World\"]").unwrap(), want); // a [ in the preamble
+        assert!(extract_json_array("I cannot translate this.").is_err());
+        assert!(extract_json_array("[\"cut off").is_err());
     }
 }
