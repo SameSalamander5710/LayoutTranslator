@@ -334,6 +334,13 @@ pub fn extract_json_array(raw: &str) -> Result<Vec<String>, String> {
     Err(format!("Model did not return a JSON array. Reply began: {}", s.chars().take(80).collect::<String>()))
 }
 
+/// The one HTTP client for all translation requests of the app, so connections stay open between requests and pages.
+/// There is deliberately no overall timeout: a slow local model may need minutes for a page.
+fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::builder().tcp_keepalive(std::time::Duration::from_secs(30)).build().unwrap_or_default())
+}
+
 /// Result of the "Test connection" button.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -432,8 +439,8 @@ async fn model_id(client: &reqwest::Client, base: &str) -> String {
 pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: &TranslateOptions, only: Option<&[u32]>, cache: &TranslationCache)
     -> Result<(usize, usize), String> {
     let par = opts.max_parallel.clamp(1, 16);
-    let client = reqwest::Client::new();
-    let key = cache_key(blocks, target, base, &model_id(&client, base).await, opts);
+    let client = http();
+    let key = cache_key(blocks, target, base, &model_id(client, base).await, opts);
     let want: Vec<usize> = blocks.iter().enumerate()
         .filter(|(_, b)| !b.text.trim().is_empty() && only.map_or(true, |o| o.contains(&b.id))).map(|(i, _)| i).collect();
     let (mut idx, mut cached) = (vec![], 0usize);
@@ -474,7 +481,7 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
         if !cur.is_empty() { batches.push(cur); }
     }
     let jobs: Vec<(Vec<usize>, Vec<String>)> = batches.into_iter().map(|b| { let t = b.iter().map(|&i| blocks[i].text.clone()).collect(); (b, t) }).collect();
-    let (client, pre, pre_min) = (&client, &pre, &pre_min);
+    let (pre, pre_min) = (&pre, &pre_min);
     let mut results = stream::iter(jobs).map(|(b, texts)| async move {
         let out = translate_chunk(client, pre, pre_min, &texts, base).await?;
         Ok::<_, String>((b, out))
