@@ -264,9 +264,14 @@ async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
     if(r.cached)log(`${lab}: ${r.cached} of ${p.blocks.length} blocks reused from an earlier run`);
     if(r.missing)log(`${lab}: ${r.missing} block(s) got no translation and keep their source text (retry them in the Text blocks tab)`)}
   setStep('tr','done',"done");chk();setStep('ty','run',lab);await typeset(i);setStep('ty','done',"done");await go(i);setView('out')}
-$('#run').onclick=async()=>{running(true);$('#prog').max=pg.length;
-  try{for(let i=0;i<pg.length;i++){$('#prog').value=i;log(`Page ${i+1}/${pg.length} …`);await doPage(i)}
-    $('#prog').value=pg.length;$('#save').disabled=false;log("Done.")}
+$('#run').onclick=async()=>{running(true);$('#prog').max=pg.length;const failed=[]; // one broken page must not waste the rest of a long run
+  try{for(let i=0;i<pg.length;i++){$('#prog').value=i;log(`Page ${i+1}/${pg.length} …`);
+      try{await doPage(i)}
+      catch(e){if(e instanceof Stopped||String(e)==="Cancelled")throw e; // Stop still ends the whole run
+        const why=String(e&&e.message||e);failed.push(`${i+1} (${why})`);log(`Page ${i+1} failed: ${why}`);
+        $$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="failed"})}}
+    $('#prog').value=pg.length;$('#save').disabled=false;
+    log(failed.length?`Done. ${failed.length} page(s) failed: ${failed.join(", ")}. Press Run all to try them again.`:"Done.")}
   catch(e){if(e instanceof Stopped||String(e)==="Cancelled"){$$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="stopped"});log("Stopped. Pages that were already finished are kept.")}
     else log("Error: "+e)}
   finally{running(false)}};
