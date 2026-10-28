@@ -98,6 +98,7 @@ button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;
     <button data-v="orig" aria-pressed="true">Original</button>
     <button data-v="boxes" aria-pressed="false">Detected text</button>
     <button data-v="out" aria-pressed="false">Translated</button>
+    <button data-v="cmp" aria-pressed="false" disabled title="Drag a slider across the page to compare the translation with the original">Compare</button>
     <button data-v="blocks" aria-pressed="false">Text blocks</button>
   </div>
   <div class="bar"><button id="prev" aria-label="Previous page">◀</button><span id="pn">–</span><button id="next" aria-label="Next page">▶</button>
@@ -181,6 +182,13 @@ cv.addEventListener('pointerup',async()=>{if(!drag)return;const d=drag;drag=null
   if(d.kind==='add'){adding=false;syncBoxUi();cv.style.cursor='default';if(d.rect[2]>=8&&d.rect[3]>=8)await addBox(d.rect);else render();return}
   if(d.changed){await refreshColors(d.b);retypeset(cur)}render()});
 cv.addEventListener('pointercancel',()=>{drag=null;render()});
+// Compare view: the divider follows the pointer while it is pressed (position is kept as a fraction of the page width).
+let split=0.5,cmpDrag=false;
+const moveSplit=e=>{split=Math.min(1,Math.max(0,ptr(e)[0]/cv.width));render()};
+cv.addEventListener('pointerdown',e=>{if(view!=='cmp'||e.button!==0||!P().out)return;cmpDrag=true;cv.setPointerCapture(e.pointerId);moveSplit(e)});
+cv.addEventListener('pointermove',e=>{if(view==='cmp'&&cmpDrag)moveSplit(e)});
+cv.addEventListener('pointerup',()=>{cmpDrag=false});
+cv.addEventListener('pointercancel',()=>{cmpDrag=false});
 $('#addbox').onclick=()=>{adding=!adding;syncBoxUi();cv.style.cursor=adding?'crosshair':'default'};
 $('#delbox').onclick=delBox;
 document.addEventListener('keydown',e=>{if(view!=='boxes')return;
@@ -199,8 +207,13 @@ new ResizeObserver(()=>applyZoom()).observe($('#stage'));
 // below are fully red because OCR scores are mostly above 0.9. Lines from a PDF text layer have confidence 1 (green).
 const CONF_FLOOR=0.5;
 const confColor=c=>{if(!(c>0))return"hsl(0 85% 45%)";const t=Math.min(1,Math.max(0,(c-CONF_FLOOR)/(1-CONF_FLOOR)));return`hsl(${Math.round(t*120)} 85% 40%)`};
-function render(){if(view==="blocks")return;const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);applyZoom(false);return}
+function render(){const cb=$('[data-v="cmp"]');if(cb)cb.disabled=!P().out;if(view==="blocks")return;const p=P(),base=view==="out"&&p.out?p.out:p.orig;if(!base){cx.clearRect(0,0,cv.width,cv.height);applyZoom(false);return}
   cv.width=base.width;cv.height=base.height;cx.drawImage(base,0,0);applyZoom(false);
+  if(view==="cmp"&&p.out){ // translation on the left of the divider, original on the right
+    const x=split*base.width,sc=dispScale(),cy=base.height/2,r=16/sc;
+    cx.save();cx.beginPath();cx.rect(0,0,x,base.height);cx.clip();cx.drawImage(p.out,0,0);cx.restore();
+    cx.fillStyle="#1f6feb";cx.fillRect(x-1.5/sc,0,3/sc,base.height);
+    cx.beginPath();cx.arc(x,cy,r,0,Math.PI*2);cx.fill();cx.fillStyle="#fff";cx.font=`bold ${14/sc}px sans-serif`;cx.textAlign="center";cx.textBaseline="middle";cx.fillText("◀▶",x,cy);cx.textAlign="start";cx.textBaseline="alphabetic";return}
   if(view!=="boxes")return;
   const sc=dispScale(),lw=2/sc;
   p.blocks.forEach(b=>{const on=b.id===sel,c=confColor(b.conf);
@@ -211,7 +224,7 @@ function render(){if(view==="blocks")return;const p=P(),base=view==="out"&&p.out
     for(const[,fx,fy]of HND){const hx=s.bbox[0]+s.bbox[2]*fx,hy=s.bbox[1]+s.bbox[3]*fy;cx.fillRect(hx-r,hy-r,2*r,2*r);cx.strokeRect(hx-r,hy-r,2*r,2*r)}}
   if(drag&&drag.kind==="add"){cx.setLineDash([6/sc,4/sc]);cx.strokeStyle="#1f6feb";cx.lineWidth=lw;cx.strokeRect(...drag.rect);cx.setLineDash([])}}
 function setView(v){view=v;$$('.view button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v));
-  const bv=v==='blocks';$('#stage').hidden=bv;$('#blocksView').hidden=!bv;$$('#zoomctl button').forEach(b=>b.disabled=bv);$('#boxbar').hidden=v!=='boxes';if(v!=='boxes')adding=false;syncBoxUi();render()}
+  const bv=v==='blocks';$('#stage').hidden=bv;$('#blocksView').hidden=!bv;$$('#zoomctl button').forEach(b=>b.disabled=bv);$('#boxbar').hidden=v!=='boxes';if(v!=='boxes')adding=false;cv.style.cursor=v==='cmp'?'ew-resize':'default';cv.style.touchAction=v==='cmp'?'none':'';syncBoxUi();render()}
 function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":'<p class="note">Run the pipeline to see detected blocks.</p>';
   bl.forEach(b=>{const d=document.createElement('div');d.className="blk"+(b.id===sel?" sel":"");d.style.cssText=`border-left:4px solid ${confColor(b.conf)};padding-left:8px`;
     d.innerHTML=`<small>#${b.id} · ${b.conf>0?'conf '+Math.round(b.conf*100)+'%':'no text read, type it below'}</small>`;
