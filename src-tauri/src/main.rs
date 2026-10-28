@@ -56,7 +56,7 @@ async fn run_ocr(app: AppHandle, cache: tauri::State<'_, EngineCache>, path: Str
     let (mut blocks, layer_lines, ocr_ran) = tauri::async_runtime::spawn_blocking(move || pipeline::detect(&p2, &dir2, &cache, &mode))
         .await
         .map_err(|e| e.to_string())??;
-    let im = image::open(&p).map_err(|e| e.to_string())?;
+    let im = pipeline::load_oriented(&p)?;
     let rgb = im.to_rgb8();
     for (i, b) in blocks.iter_mut().enumerate() {
         b.id = i as u32 + 1;
@@ -155,7 +155,7 @@ async fn open_document(app: AppHandle, path: String) -> Result<Vec<String>, Stri
 
 #[tauri::command]
 async fn preview(path: String) -> Result<String, String> {
-    pipeline::png_data_url(&image::open(&path).map_err(|e| e.to_string())?)
+    pipeline::png_data_url(&pipeline::load_oriented(Path::new(&path))?)
 }
 
 #[derive(Deserialize)]

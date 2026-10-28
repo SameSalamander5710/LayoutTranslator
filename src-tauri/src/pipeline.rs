@@ -15,6 +15,19 @@ use std::sync::{Arc, Mutex};
 pub const PDF_DPI: f32 = 200.0;
 pub type Engine = OAROCR;
 
+/// Reads an image and turns it upright using its EXIF orientation tag. Phone photos are often stored sideways with a tag
+/// that says how to turn them; `image::open` and oar-ocr's `load_image` decode the pixels only, so such a photo would be
+/// read and drawn on its side. Every place that reads a page image must use this.
+pub fn load_oriented(path: &Path) -> Result<DynamicImage, String> {
+    use image::{metadata::Orientation, ImageDecoder, ImageReader};
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let mut decoder = ImageReader::open(path).map_err(|e| err(&e))?.with_guessed_format().map_err(|e| err(&e))?.into_decoder().map_err(|e| err(&e))?;
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).map_err(|e| err(&e))?;
+    img.apply_orientation(orientation);
+    Ok(img)
+}
+
 /// Locks a mutex even if another thread panicked while holding it. Both caches only hold finished entries, so their data
 /// is still valid after such a panic; with a plain `unwrap()` one panic would make every later call panic too, until the
 /// app is restarted.
@@ -52,7 +65,7 @@ pub struct Block {
 struct Line { b: [f32; 4], t: String, c: f32, fg: [u8; 3], bg: [u8; 3] }
 
 pub fn ocr(img: &Path, dir: &Path, cache: &EngineCache) -> Result<Vec<Block>, String> {
-    let im = load_image(img).map_err(|e| e.to_string())?;
+    let im = load_oriented(img)?.to_rgb8();
     Ok(group(ocr_lines(&im, dir, cache)?))
 }
 
@@ -165,7 +178,7 @@ fn overlap_frac(a: &[f32; 4], b: &[f32; 4]) -> f32 {
 /// 3. All lines are grouped into blocks together.
 /// With `allow_ocr == false` only step 1 runs (selectable text only; images and scanned text are ignored).
 pub fn ocr_hybrid(img: &Path, dir: &Path, cache: &EngineCache, layer: &TextLayer, allow_ocr: bool) -> Result<(Vec<Block>, usize, bool), String> {
-    let im = load_image(img).map_err(|e| e.to_string())?;
+    let im = load_oriented(img)?.to_rgb8();
     let mut lines: Vec<Line> = merge_layer_lines(&layer.lines).iter().filter(|l| !l.t.trim().is_empty() && l.b[2] >= 1.0 && l.b[3] >= 1.0).map(|l| {
         let (fg, bg) = box_colors(&im, l.b[0], l.b[1], l.b[2], l.b[3]);
         Line { b: l.b, t: l.t.trim().to_string(), c: 1.0, fg, bg }
@@ -549,14 +562,14 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
 // ---------- Box editing helpers ----------
 /// Re-estimates text and background colour for a box the user moved or resized.
 pub fn sample_colors(img: &Path, bbox: [f32; 4]) -> Result<([u8; 3], [u8; 3]), String> {
-    let im = image::open(img).map_err(|e| e.to_string())?.to_rgb8();
+    let im = load_oriented(img)?.to_rgb8();
     Ok(box_colors(&im, bbox[0], bbox[1], bbox[2], bbox[3]))
 }
 
 /// Builds a block for a box the user drew: selectable PDF text under the box if there is any (unless mode is "ocr"),
 /// otherwise OCR on just that area (unless mode is "text"). The text may come back empty; the user can type it in.
 pub fn read_region(img: &Path, dir: &Path, cache: &EngineCache, bbox: [f32; 4], mode: &str) -> Result<Block, String> {
-    let im = load_image(img).map_err(|e| e.to_string())?;
+    let im = load_oriented(img)?.to_rgb8();
     let (iw, ih) = im.dimensions();
     let x0 = bbox[0].max(0.0).min(iw as f32 - 1.0);
     let y0 = bbox[1].max(0.0).min(ih as f32 - 1.0);
@@ -706,7 +719,7 @@ pub fn fit_px(f: &FontArc, text: &str, w: u32, h: u32) -> f32 {
 }
 
 pub fn render(img: &Path, font_path: &Path, blocks: &[Block]) -> Result<image::RgbaImage, String> {
-    let mut im = image::open(img).map_err(|e| e.to_string())?.to_rgba8();
+    let mut im = load_oriented(img)?.to_rgba8();
     let font = FontArc::try_from_vec(std::fs::read(font_path).map_err(|e| format!("Font missing ({}): {e}", font_path.display()))?).map_err(|e| e.to_string())?;
     // Pass 1: erase every original text area. All patches are computed from the untouched page (in parallel, one block
     // per task) and then applied in block order, so an erase can never wipe translated text of an overlapping block.
@@ -1365,5 +1378,30 @@ mod tests {
         let mut blocks = vec![Block { id: 1, bbox: [0.0, 0.0, 10.0, 10.0], text: "12345".into(), translated: None, conf: 1.0, font_px: 10.0, fg: [0; 3], bg: [255; 3] }];
         let r = translate(&mut blocks, "English", "http://127.0.0.1:9/v1", &TranslateOptions::default(), None, &cache).await;
         assert_eq!(r.unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn exif_orientation_is_applied() {
+        // The file is stored 32x16 (left half red, right half blue) with the tag "rotate 90 degrees clockwise".
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/exif-orientation-6.jpg");
+        let im = load_oriented(&p).unwrap().to_rgb8();
+        assert_eq!(im.dimensions(), (16, 32), "turned upright");
+        let (top, bottom) = (im.get_pixel(8, 4).0, im.get_pixel(8, 28).0);
+        assert!(top[0] > 200 && top[2] < 60, "top is the red half: {top:?}");
+        assert!(bottom[2] > 200 && bottom[0] < 60, "bottom is the blue half: {bottom:?}");
+        // The plain decoder leaves it on its side, which is the bug being fixed.
+        let raw = image::open(&p).unwrap();
+        assert_eq!((raw.width(), raw.height()), (32, 16));
+    }
+
+    #[test]
+    fn images_without_a_tag_are_unchanged() {
+        let d = temp_dir("plain");
+        let p = d.join("a.png");
+        RgbImage::from_pixel(30, 10, Rgb([1, 2, 3])).save(&p).unwrap();
+        let im = load_oriented(&p).unwrap();
+        assert_eq!((im.width(), im.height()), (30, 10));
+        assert!(load_oriented(&d.join("missing.png")).unwrap_err().contains("missing.png"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
