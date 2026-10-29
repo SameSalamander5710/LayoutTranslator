@@ -9,6 +9,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tokio = { version = "1", default-features = false, features = ["time"] } # waits between retries (already in the tree through reqwest and tauri; MIT)
 tokio-util = { version = "0.7.12", default-features = false } # CancellationToken for the Stop button
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,7 +27,7 @@ rayon = "1.12"            # erases and lays out the blocks of a page on all CPU 
 pdfium-render = "0.8"   # binds to a pdfium library shipped in resources/pdfium
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] } # runs the async tests (already in the tree through reqwest and tauri; MIT)
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] } # async tests and a small mock server (MIT)
 
 [profile.dev.package."*"]
 opt-level = 3            # OCR is unusably slow at opt-level 0

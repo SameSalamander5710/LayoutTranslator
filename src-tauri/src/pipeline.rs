@@ -368,13 +368,68 @@ fn prefix(target: &str, o: &TranslateOptions, page_text: &str) -> Vec<serde_json
     v
 }
 
+/// Cleans up the endpoint address typed by the user: surrounding spaces and a trailing `/` go, and `http://` is added when
+/// there is no scheme (`127.0.0.1:8080/v1` is accepted). Spaces inside the address and other schemes are refused with a
+/// message, because the network error for them says nothing useful.
+pub fn endpoint_url(base: &str) -> Result<String, String> {
+    let t = base.trim().trim_end_matches('/');
+    if t.is_empty() { return Err("Enter the endpoint URL, for example http://127.0.0.1:8080/v1".into()); }
+    if t.chars().any(char::is_whitespace) { return Err("The endpoint URL must not contain spaces".into()); }
+    match t.split_once("://") {
+        Some((scheme, _)) if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") => Ok(t.to_string()),
+        Some(_) => Err("URL must start with http:// or https://".into()),
+        None => Ok(format!("http://{t}")),
+    }
+}
+
+/// A server that is still loading its model answers 503, and a server that restarts resets the connection. Both are
+/// retried a few times before the request counts as failed. (Stop still works: it drops the whole future, also the wait.)
+const RETRIES: usize = 3;
+const RETRY_WAIT: std::time::Duration = if cfg!(test) { std::time::Duration::from_millis(50) } else { std::time::Duration::from_secs(2) };
+
+/// True for a connection that was reset or closed under the request (not for "nothing is listening", which is a final answer).
+fn is_transient(e: &reqwest::Error) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            use std::io::ErrorKind::*;
+            if matches!(io.kind(), ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof) { return true; }
+        }
+        if err.to_string().contains("connection closed before message completed") { return true; }
+        cur = err.source();
+    }
+    false
+}
+
+/// A reply limit, generous on purpose: a model that loops would otherwise write until its context is full, and with no
+/// timeout the page would wait until the user presses Stop. A reply that is cut off still falls back to one block at a time.
+fn max_tokens(texts: &[&str]) -> usize {
+    (texts.iter().map(|t| t.chars().count()).sum::<usize>() * 4 + 256).clamp(256, 8192)
+}
+
 async fn call(client: &reqwest::Client, prefix: &[serde_json::Value], texts: &[&str], base: &str) -> Result<Vec<String>, String> {
     let mut messages = prefix.to_vec();
     messages.push(serde_json::json!({"role": "user", "content": serde_json::to_string(texts).unwrap()}));
-    let body = serde_json::json!({"model": "default", "temperature": 0.2, "messages": messages});
-    let r = client.post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&body).send().await
-        .map_err(|e| format!("Cannot reach {base}: {e}"))?;
-    if !r.status().is_success() { return Err(format!("Endpoint returned HTTP {}", r.status())); }
+    let body = serde_json::json!({"model": "default", "temperature": 0.2, "max_tokens": max_tokens(texts), "messages": messages});
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+    let mut attempt = 0;
+    let r = loop {
+        match client.post(&url).json(&body).send().await {
+            Ok(r) if r.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && attempt < RETRIES => {}
+            Ok(r) => break r,
+            Err(e) if is_transient(&e) && attempt < RETRIES => {}
+            Err(e) => return Err(format!("Cannot reach {base}: {e}")),
+        }
+        attempt += 1;
+        tokio::time::sleep(RETRY_WAIT).await;
+    };
+    let status = r.status();
+    if !status.is_success() {
+        // llama-server explains the problem in the body (for example "context too small"), so show the start of it.
+        let text = r.text().await.unwrap_or_default();
+        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+        return Err(if text.is_empty() { format!("Endpoint returned HTTP {status}") } else { format!("Endpoint returned HTTP {status}: {text}") });
+    }
     let j: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
     let c = j["choices"][0]["message"]["content"].as_str().ok_or("Response had no message content")?;
     extract_json_array(c)
@@ -383,13 +438,25 @@ async fn call(client: &reqwest::Client, prefix: &[serde_json::Value], texts: &[&
 /// Pulls the JSON array of strings out of a model reply. Reasoning models print `<think>...</think>` first, and chatty
 /// models add a sentence or a ``` fence around the array, so the reply is cleaned up in steps: drop the reasoning,
 /// strip fences, then (if it still does not parse) try every `[` up to the last `]` as the start of the array.
+/// Reads a JSON array as a list of strings. A model sometimes writes a number or true/false where a string belongs
+/// (`["Hello", 2]`); those become text instead of failing the whole reply. Anything else (null, nested arrays) is refused.
+fn parse_strings(s: &str) -> Option<Vec<String>> {
+    let items: Vec<serde_json::Value> = serde_json::from_str(s).ok()?;
+    items.into_iter().map(|v| match v {
+        serde_json::Value::String(t) => Some(t),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }).collect()
+}
+
 pub fn extract_json_array(raw: &str) -> Result<Vec<String>, String> {
     let s = match raw.rfind("</think>") { Some(p) => &raw[p + "</think>".len()..], None => raw };
     let s = s.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-    if let Ok(v) = serde_json::from_str::<Vec<String>>(s) { return Ok(v); }
+    if let Some(v) = parse_strings(s) { return Ok(v); }
     if let Some(end) = s.rfind(']') {
         for (start, _) in s.match_indices('[') {
-            if start < end { if let Ok(v) = serde_json::from_str::<Vec<String>>(&s[start..=end]) { return Ok(v); } }
+            if start < end { if let Some(v) = parse_strings(&s[start..=end]) { return Ok(v); } }
         }
     }
     Err(format!("Model did not return a JSON array. Reply began: {}", s.chars().take(80).collect::<String>()))
@@ -410,8 +477,8 @@ pub struct ConnInfo { pub message: String, pub slots: Option<u32>, pub warning: 
 /// Checks that the server answers at `base` (e.g. http://127.0.0.1:8080/v1). llama-server's `/props` page, when available,
 /// also tells how many parallel slots it was started with (-np) and how many tokens of context each slot has.
 pub async fn test_connection(base: &str) -> Result<ConnInfo, String> {
-    let base = base.trim().trim_end_matches('/');
-    if !(base.starts_with("http://") || base.starts_with("https://")) { return Err("URL must start with http:// or https://".into()); }
+    let base = endpoint_url(base)?;
+    let base = base.as_str();
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
     let r = client.get(format!("{base}/models")).send().await.map_err(|e| {
         if e.is_timeout() { "Timed out after 5 seconds".to_string() }
@@ -501,6 +568,8 @@ pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: 
     -> Result<(usize, usize), String> {
     let par = opts.max_parallel.clamp(1, 16);
     let client = http();
+    let base = endpoint_url(base)?;
+    let base = base.as_str();
     let key = cache_key(blocks, target, base, &model_id(client, base).await, opts);
     // Blocks that are only numbers, URLs, e-mail addresses or codes stay as they are. A block the user asks for by id is always translated.
     let want: Vec<usize> = blocks.iter().enumerate()
@@ -1520,5 +1589,102 @@ mod tests {
         let e = rasterise_pdf(&f, &lib, &d).unwrap_err();
         assert_eq!(e, "This PDF is password protected. Remove the password first.");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // ----- R8: translation endpoint -----
+
+    #[test]
+    fn endpoint_urls_are_cleaned_up() {
+        assert_eq!(endpoint_url("  http://127.0.0.1:8080/v1/  ").unwrap(), "http://127.0.0.1:8080/v1");
+        assert_eq!(endpoint_url("127.0.0.1:8080/v1").unwrap(), "http://127.0.0.1:8080/v1", "scheme added");
+        assert_eq!(endpoint_url("localhost:8080").unwrap(), "http://localhost:8080");
+        assert_eq!(endpoint_url("HTTPS://example.com/v1").unwrap(), "HTTPS://example.com/v1");
+        assert!(endpoint_url("http://127.0.0.1 :8080/v1").unwrap_err().contains("spaces"));
+        assert!(endpoint_url("ftp://host/v1").unwrap_err().contains("http://"));
+        assert!(endpoint_url("   ").is_err());
+    }
+
+    #[test]
+    fn numbers_and_booleans_in_a_reply_become_text() {
+        assert_eq!(extract_json_array(r#"["Hello", 2]"#).unwrap(), ["Hello", "2"]);
+        assert_eq!(extract_json_array(r#"Here: [1.5, true, "x"]"#).unwrap(), ["1.5", "true", "x"]);
+        assert!(extract_json_array(r#"["a", null]"#).is_err());
+        assert!(extract_json_array(r#"[["a"]]"#).is_err());
+    }
+
+    #[test]
+    fn the_reply_limit_follows_the_input_and_stays_in_range() {
+        assert_eq!(max_tokens(&[]), 256);
+        assert_eq!(max_tokens(&["abcde"]), 20 + 256);
+        assert_eq!(max_tokens(&["日本語"]), 12 + 256, "counts characters, not bytes");
+        assert_eq!(max_tokens(&[&"x".repeat(100_000)]), 8192);
+    }
+
+    /// Answers the given (status, body) pairs, one per request in order, and records each request it received. Status 0 hangs up.
+    async fn mock_server(replies: Vec<(u16, String)>) -> (String, Arc<Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(vec![]));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            for (status, body) in replies {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let (mut buf, mut tmp) = (vec![], [0u8; 4096]);
+                loop {
+                    let n = sock.read(&mut tmp).await.unwrap();
+                    if n == 0 { break; }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(h) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..h]).to_lowercase();
+                        let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
+                        if buf.len() >= h + 4 + len { break; }
+                    }
+                }
+                log.lock().unwrap().push(String::from_utf8_lossy(&buf).into_owned());
+                if status == 0 { continue; } // status 0: hang up without answering (the socket is dropped here)
+                let resp = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+    const OK_BODY: &str = r#"{"choices":[{"message":{"content":"[\"Hallo\"]"}}]}"#;
+
+    #[tokio::test]
+    async fn a_loading_server_is_retried_until_it_answers() {
+        let (url, seen) = mock_server(vec![(503, "Loading model".into()), (503, "Loading model".into()), (200, OK_BODY.into())]).await;
+        let r = call(&reqwest::Client::new(), &[], &["Hello"], &url).await;
+        assert_eq!(r.unwrap(), ["Hallo"]);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "two 503 answers, then the real one");
+        assert!(seen[2].contains("\"max_tokens\":276"), "reply limit is sent: {}", seen[2]);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_stays_unavailable_gives_up_with_its_message() {
+        let (url, seen) = mock_server(vec![(503, "model is still loading".into()); 4]).await;
+        let e = call(&reqwest::Client::new(), &[], &["Hello"], &url).await.unwrap_err();
+        assert!(e.contains("503") && e.contains("model is still loading"), "{e}");
+        assert_eq!(seen.lock().unwrap().len(), 4, "one try and three retries");
+    }
+
+    #[tokio::test]
+    async fn an_error_answer_shows_the_start_of_its_body() {
+        let body = format!(r#"{{"error":{{"message":"context too small {}"}}}}"#, "x".repeat(500));
+        let (url, seen) = mock_server(vec![(400, body)]).await;
+        let e = call(&reqwest::Client::new(), &[], &["Hello"], &url).await.unwrap_err();
+        assert!(e.starts_with("Endpoint returned HTTP 400 Bad Request: ") && e.contains("context too small"), "{e}");
+        assert!(e.chars().count() < 260, "the body is cut at 200 characters");
+        assert_eq!(seen.lock().unwrap().len(), 1, "a 400 is final, no retry");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_is_cut_is_retried() {
+        let (url, seen) = mock_server(vec![(0, String::new()), (200, OK_BODY.into())]).await;
+        let r = call(&reqwest::Client::new(), &[], &["Hello"], &url).await;
+        assert_eq!(r.unwrap(), ["Hallo"]);
+        assert_eq!(seen.lock().unwrap().len(), 2);
     }
 }
