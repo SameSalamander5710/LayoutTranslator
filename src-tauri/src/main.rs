@@ -15,6 +15,7 @@ fn roots(app: &AppHandle) -> Vec<PathBuf> {
 }
 fn has_model(d: &Path) -> bool { pipeline::model_problem(d).is_none() }
 fn lang_dir(app: &AppHandle, lang: &str) -> Result<PathBuf, String> {
+    if !pipeline::valid_lang_name(lang) { return Err(format!("'{lang}' is not a valid language name")); }
     let dirs: Vec<PathBuf> = roots(app).into_iter().map(|r| r.join(lang)).collect();
     if let Some(d) = dirs.iter().find(|d| has_model(d)) { return Ok(d.clone()); }
     // A folder exists but is incomplete: say which file is the problem instead of a vague "not found".
@@ -28,7 +29,7 @@ fn lang_dir(app: &AppHandle, lang: &str) -> Result<PathBuf, String> {
 fn list_languages(app: AppHandle) -> Vec<String> {
     let mut v: Vec<String> = roots(&app).iter().filter_map(|r| std::fs::read_dir(r).ok())
         .flat_map(|rd| rd.flatten()).filter(|e| has_model(&e.path()))
-        .map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        .map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| pipeline::valid_lang_name(n)).collect(); // never list a name lang_dir would refuse
     v.sort(); v.dedup(); v
 }
 

@@ -36,6 +36,13 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> { m.lock().unwrap_or_el
 /// The three files every OCR model folder needs.
 pub const MODEL_FILES: [&str; 3] = ["det.onnx", "rec.onnx", "dict.txt"];
 
+/// True for a language name that is safe to use as a folder name under `models/`. The name comes from the UI (a
+/// drop-down), but it is joined into a path, so anything that could leave that folder is refused: `/`, `\`, `..`, a
+/// colon (a drive letter on Windows) and an empty name.
+pub fn valid_lang_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\', ':', '\0']) && !name.contains("..")
+}
+
 /// Names the first problem in an OCR model folder, or None when it is complete. An empty file counts as a problem: an
 /// interrupted download leaves one, and the OCR engine then fails with an error nobody can read.
 pub fn model_problem(dir: &Path) -> Option<String> {
@@ -1751,5 +1758,11 @@ mod tests {
         assert!(std::fs::read(d.join("p.pdf")).unwrap().starts_with(b"%PDF-1.4"));
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 2, "only the two results, no .tmp files");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn language_names_cannot_leave_the_models_folder() {
+        for ok in ["en", "ja", "zh-CN", "chinese_traditional", "My Language 2"] { assert!(valid_lang_name(ok), "{ok}"); }
+        for bad in ["../x", "..", "a/b", "a\\b", "..\\x", "C:", "C:\\x", "/etc", "a..b", "", "a\0b"] { assert!(!valid_lang_name(bad), "{bad:?}"); }
     }
 }
