@@ -171,7 +171,8 @@ async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String, lang: Optio
     let mut done = Vec::with_capacity(pages.len());
     for p in &pages {
         let im = pipeline::render(Path::new(&p.path), &font, &p.blocks)?;
-        done.push(pipeline::jpeg_page(&im, pipeline::PDF_DPI)?);
+        // Pages that were too large were drawn at a lower resolution; the real one keeps the exported page at its real size.
+        done.push(pipeline::jpeg_page(&im, pipeline::page_dpi(Path::new(&p.path)))?);
     }
     pipeline::write_pdf_pages(&done, Path::new(&out))
 }
