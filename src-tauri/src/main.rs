@@ -135,11 +135,11 @@ async fn render_page(app: AppHandle, path: String, blocks: Vec<Block>, out: Opti
     if !font.exists() {
         let fallback = app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf");
         let im = pipeline::render(Path::new(&path), &fallback, &blocks)?;
-        if let Some(o) = out { im.save(o).map_err(|e| e.to_string())?; }
+        if let Some(o) = out { pipeline::save_png(&im, Path::new(&o))?; }
         return pipeline::png_data_url(&image::DynamicImage::ImageRgba8(im));
     }
     let im = pipeline::render(Path::new(&path), &font, &blocks)?;
-    if let Some(o) = out { im.save(o).map_err(|e| e.to_string())?; }
+    if let Some(o) = out { pipeline::save_png(&im, Path::new(&o))?; }
     pipeline::png_data_url(&image::DynamicImage::ImageRgba8(im))
 }
 

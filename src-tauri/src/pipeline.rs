@@ -1033,6 +1033,30 @@ fn put(o: &mut Vec<u8>, offs: &mut Vec<usize>, id: usize, body: &[u8]) {
     offs.push(o.len());
     o.extend(format!("{id} 0 obj\n").as_bytes()); o.extend(body); o.extend(b"\nendobj\n");
 }
+/// Writes a file so that the old one survives a failure: the bytes go to `<name>.tmp` in the same folder first and replace
+/// the target with one rename only when everything was written. A full disk or a crash halfway leaves the earlier file
+/// (the user's previous export) untouched.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut name = path.file_name().ok_or_else(|| format!("{} is not a file name", path.display()))?.to_os_string();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Cannot write {}: {e}", path.display()));
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Cannot write {}: {e}", path.display())
+    })
+}
+
+/// Saves a rendered page as PNG (encoded in memory first, then written with `write_atomic`).
+pub fn save_png(im: &image::RgbaImage, path: &Path) -> Result<(), String> {
+    let mut buf = std::io::Cursor::new(vec![]);
+    im.write_to(&mut buf, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    write_atomic(path, &buf.into_inner())
+}
+
 /// One finished page for the PDF writer. It keeps only the JPEG (about 0.3 to 1 MB) instead of the decoded image (about
 /// 15 MB for an A4 page at 200 DPI), so a long document can be exported one page at a time with little memory.
 pub struct JpegPage { pub w: u32, pub h: u32, pub dpi: f32, pub jpg: Vec<u8> }
@@ -1071,7 +1095,7 @@ pub fn write_pdf_pages(pages: &[JpegPage], out: &Path) -> Result<(), String> {
     o.extend(format!("xref\n0 {}\n0000000000 65535 f \n", offs.len() + 1).as_bytes());
     for off in &offs { o.extend(format!("{off:010} 00000 n \n").as_bytes()); }
     o.extend(format!("trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF", offs.len() + 1).as_bytes());
-    std::fs::write(out, o).map_err(|e| e.to_string())
+    write_atomic(out, &o)
 }
 
 #[cfg(test)]
@@ -1686,5 +1710,46 @@ mod tests {
         let r = call(&reqwest::Client::new(), &[], &["Hello"], &url).await;
         assert_eq!(r.unwrap(), ["Hallo"]);
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    // ----- R7: atomic writes -----
+
+    #[test]
+    fn write_atomic_writes_and_replaces() {
+        let d = temp_dir("atomic");
+        let f = d.join("out.pdf");
+        write_atomic(&f, b"first").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"first");
+        write_atomic(&f, b"second, longer").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"second, longer");
+        assert!(!d.join("out.pdf.tmp").exists(), "no temporary file is left behind");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_old_file_alone() {
+        let d = temp_dir("atomic-fail");
+        let f = d.join("out.pdf");
+        std::fs::write(&f, b"the user's earlier export").unwrap();
+        // The temporary name is taken by a folder, so writing it fails (works the same on every OS, also when run as admin).
+        std::fs::create_dir(d.join("out.pdf.tmp")).unwrap();
+        assert!(write_atomic(&f, b"new").unwrap_err().contains("out.pdf"));
+        assert_eq!(std::fs::read(&f).unwrap(), b"the user's earlier export");
+        assert!(d.join("out.pdf.tmp").is_dir(), "what was in the way is not deleted");
+        // A missing folder is an error too, not a panic.
+        assert!(write_atomic(&d.join("nope").join("x.png"), b"x").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn png_and_pdf_exports_go_through_the_atomic_writer() {
+        let d = temp_dir("export");
+        let im = image::RgbaImage::from_pixel(8, 6, Rgba([1, 2, 3, 255]));
+        save_png(&im, &d.join("p.png")).unwrap();
+        assert_eq!(image::open(d.join("p.png")).unwrap().to_rgba8(), im);
+        write_pdf(&[im], 72.0, &d.join("p.pdf")).unwrap();
+        assert!(std::fs::read(d.join("p.pdf")).unwrap().starts_with(b"%PDF-1.4"));
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 2, "only the two results, no .tmp files");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
