@@ -168,13 +168,31 @@ function dragBox(d,x,y){const dx=x-d.x0,dy=y-d.y0,W=cv.width,H=cv.height,min=8;l
   if(d.k.includes('n'))by=clamp(by+dy,0,y1-min);if(d.k.includes('s'))y1=clamp(y1+dy,by+min,H);
   return[bx,by,x1-bx,y1-by]}
 function syncBoxUi(){const on=!!P().ocr;$('#addbox').disabled=!on||busy;$('#addbox').textContent=adding?'Cancel':'+ Add box';$('#delbox').disabled=sel==null||busy;
-  $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it.'}
+  $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move (a box moved onto other text reads that text), drag a handle to resize, Delete removes it.'}
 function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i).catch(e=>log("Error: "+errText(e))),500)}
+// What a box's text was read from. A box that is moved or resized away from that place reads the text under its new place,
+// otherwise it would keep the old text (and its translation) while covering something else. Kept per page by block id:
+// `read` = the rectangle the text was read from, `typed` = the user typed the text, so it is never replaced by a re-read.
+const meta=(p,b)=>((p.meta??={})[b.id]??={});
+const REREAD_BELOW=0.5;   // overlap (intersection over union) with the place of the text under which it is read again
+function overlap(a,b){const iw=Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-Math.max(a[0],b[0])),ih=Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-Math.max(a[1],b[1])),i=iw*ih;return i/((a[2]*a[3]+b[2]*b[3]-i)||1)}
+async function rereadIfMoved(p,b){const m=meta(p,b);
+  if(!m.read||overlap(m.read,b.bbox)>=REREAD_BELOW)return false;
+  if(m.typed){log(`Box ${b.id} moved to another place. Its text is kept because you typed it.`);return false}
+  setBusy(true,"read");
+  try{const r=await inv('read_region',{path:p.path,lang:$('#lang').value,mode:$('#mode').value,bbox:b.bbox.map(v=>Math.round(v))});
+    // the rectangle stays as the user placed it; the text and what depends on it come from the new place
+    Object.assign(b,{text:r.text,conf:r.conf,fontPx:r.fontPx,fg:r.fg,bg:r.bg,translated:null});m.read=[...b.bbox];
+    log(r.text?`Box ${b.id} now reads "${r.text.slice(0,40)}". Its old translation was removed: press Translate on it in Text blocks, or Run all.`
+      :`Box ${b.id}: no text found at its new place. Type it in the Text blocks tab, or move the box back.`);
+    list();return true}
+  catch(e){log(`Could not read the text at the new place of box ${b.id}: ${errText(e)} The old text is kept.`);return false}
+  finally{setBusy(false)}}
 async function refreshColors(b){try{const c=await inv('sample_colors',{path:P().path,bbox:b.bbox});b.fg=c[0];b.bg=c[1]}catch(e){}}
 async function addBox(rect){const p=P();let b;
   try{b=await inv('read_region',{path:p.path,lang:$('#lang').value,mode:$('#mode').value,bbox:rect.map(v=>Math.round(v))})}
   catch(e){log("Could not read text in the new box: "+e);b={id:0,bbox:rect,text:"",translated:null,conf:0,fontPx:rect[3]*.6,fg:[0,0,0],bg:[255,255,255]}}
-  b.id=Math.max(0,...p.blocks.map(k=>k.id))+1;p.blocks.push(b);sel=b.id;
+  b.id=Math.max(0,...p.blocks.map(k=>k.id))+1;p.blocks.push(b);sel=b.id;meta(p,b).read=[...b.bbox];
   log(b.text?`Added box ${b.id}: "${b.text.slice(0,40)}"`:`Added box ${b.id} (no text found; type it in the Text blocks tab).`);
   syncBoxUi();list();render();retypeset(cur)}
 function delBox(){if(sel==null)return;const p=P();p.blocks=p.blocks.filter(b=>b.id!==sel);sel=null;syncBoxUi();list();render();retypeset(cur)}
@@ -184,14 +202,15 @@ async function retranslate(id){if(busy)return log(busyMsg());const i=cur,p=pg[i]
     if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}finally{setBusy(false)}}
 cv.addEventListener('pointerdown',e=>{if(view!=='boxes'||e.button!==0||!P().ocr||busy)return;const[x,y]=ptr(e);
   if(adding)drag={kind:'add',x0:x,y0:y,rect:[x,y,0,0]};
-  else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox]}}
+  else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;const m=meta(P(),h.b);m.read??=[...h.b.bbox];drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox]}}
   cv.setPointerCapture(e.pointerId);syncBoxUi();render()});
 cv.addEventListener('pointermove',e=>{if(view!=='boxes')return;const[x,y]=ptr(e);
   if(drag){if(drag.kind==='add')drag.rect=[Math.min(x,drag.x0),Math.min(y,drag.y0),Math.abs(x-drag.x0),Math.abs(y-drag.y0)];else{drag.b.bbox=dragBox(drag,x,y);drag.changed=true}render();return}
   const h=adding?null:hit(x,y);cv.style.cursor=adding?'crosshair':h?(h.k?CUR[h.k]:'move'):'default'});
 cv.addEventListener('pointerup',async()=>{if(!drag)return;const d=drag;drag=null;
   if(d.kind==='add'){adding=false;syncBoxUi();cv.style.cursor='default';if(d.rect[2]>=8&&d.rect[3]>=8)await addBox(d.rect);else render();return}
-  if(d.changed){await refreshColors(d.b);retypeset(cur)}render()});
+  if(d.changed){const p=P();if(!(await rereadIfMoved(p,d.b)))await refreshColors(d.b); // a re-read also returns the colours
+    retypeset(cur)}render()});
 cv.addEventListener('pointercancel',()=>{drag=null;render()});
 // Compare view: the divider follows the pointer while it is pressed (position is kept as a fraction of the page width).
 let split=0.5,cmpDrag=false;
@@ -240,7 +259,7 @@ function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":
   bl.forEach(b=>{const d=document.createElement('div');d.className="blk"+(b.id===sel?" sel":"");d.style.cssText=`border-left:4px solid ${confColor(b.conf)};padding-left:8px`;
     d.innerHTML=`<small>#${b.id} · ${b.conf>0?'conf '+Math.round(b.conf*100)+'%':'no text read, type it below'}</small>`;
     const sv=document.createElement('textarea');sv.className="src";sv.rows=2;sv.value=b.text;sv.setAttribute('aria-label','Source text of block '+b.id);
-    sv.oninput=()=>{b.text=sv.value;if(b.translated==null)retypeset(cur)};d.appendChild(sv);
+    sv.oninput=()=>{b.text=sv.value;meta(P(),b).typed=true;if(b.translated==null)retypeset(cur)};d.appendChild(sv);
     if(b.translated!=null){const t=document.createElement('textarea');t.value=b.translated;t.setAttribute('aria-label','Translation of block '+b.id);
       t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{try{await typeset(i);if(i===cur&&view!=='blocks')setView('out')}catch(e){log("Error: "+errText(e))}},400)};d.appendChild(t)}
     const rb=document.createElement('button');rb.className="sm";rb.textContent=b.translated!=null?'Retranslate':'Translate';rb.disabled=busy;rb.onclick=()=>retranslate(b.id);d.appendChild(rb);
@@ -250,7 +269,7 @@ const MODES={hybrid:"PDFs: selectable text is used directly, OCR reads only what
   text:"Only selectable PDF text is translated. Text inside images or scans is ignored, and no OCR runs."};
 function applyMode(){const m=$('#mode').value;$('#modeNote').textContent=MODES[m]||"";$('#lang').disabled=m==="text"}
 $('#mode').addEventListener('change',()=>{applyMode();
-  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.out=null;p.typeset=false});setSave(false);
+  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.meta={};p.out=null;p.typeset=false});setSave(false);
   $$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});log("Detection method changed. Press Run all to detect again.");setView('orig');go(cur)});
 // Decoded page images are large (about 15 MB each for an A4 page), so only the current page and its two neighbours keep them.
 // `go` reloads a missing original; `ensureOut` redraws a missing translated page from the blocks.
@@ -278,7 +297,7 @@ let stopReq=false;class Stopped extends Error{}
 const chk=()=>{if(stopReq)throw new Stopped()};
 function running(on){setBusy(on,"run");$('#stop').hidden=!on;$('#stop').disabled=false;$('#prog').hidden=!on;if(on)stopReq=false}
 async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
-  chk();if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});p.blocks=r.blocks;p.orig=await loadImg(r.original);p.ocr=true;
+  chk();if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});p.blocks=r.blocks;p.meta={};p.orig=await loadImg(r.original);p.ocr=true;
     if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
     else if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`)}
   setStep('ocr','done',"done");chk();setStep('tr','run',lab);
