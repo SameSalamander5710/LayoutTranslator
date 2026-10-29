@@ -168,25 +168,30 @@ function dragBox(d,x,y){const dx=x-d.x0,dy=y-d.y0,W=cv.width,H=cv.height,min=8;l
   if(d.k.includes('n'))by=clamp(by+dy,0,y1-min);if(d.k.includes('s'))y1=clamp(y1+dy,by+min,H);
   return[bx,by,x1-bx,y1-by]}
 function syncBoxUi(){const on=!!P().ocr;$('#addbox').disabled=!on||busy;$('#addbox').textContent=adding?'Cancel':'+ Add box';$('#delbox').disabled=sel==null||busy;
-  $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move (a box moved onto other text reads that text), drag a handle to resize, Delete removes it.'}
+  $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it. A box that covers a different area reads the text under it.'}
 function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i).catch(e=>log("Error: "+errText(e))),500)}
-// What a box's text was read from. A box that is moved or resized away from that place reads the text under its new place,
-// otherwise it would keep the old text (and its translation) while covering something else. Kept per page by block id:
-// `read` = the rectangle the text was read from, `typed` = the user typed the text, so it is never replaced by a re-read.
+// What a box's text was read from. A box whose area changes (moved, widened, made taller or shorter) reads the text under
+// its new area, otherwise it would keep the old text and translation while covering something else. Kept per page by block
+// id: `read` = the rectangle the text was read from, `typed` = the user typed the text, so it is never replaced by a re-read.
 const meta=(p,b)=>((p.meta??={})[b.id]??={});
-const REREAD_BELOW=0.5;   // overlap (intersection over union) with the place of the text under which it is read again
-function overlap(a,b){const iw=Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-Math.max(a[0],b[0])),ih=Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-Math.max(a[1],b[1])),i=iw*ih;return i/((a[2]*a[3]+b[2]*b[3]-i)||1)}
-async function rereadIfMoved(p,b){const m=meta(p,b);
-  if(!m.read||overlap(m.read,b.bbox)>=REREAD_BELOW)return false;
-  if(m.typed){log(`Box ${b.id} moved to another place. Its text is kept because you typed it.`);return false}
+const SAME_AREA=0.8;   // the box still covers the same content when each rectangle lies at least this much inside the other
+function sameArea(a,b){const iw=Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-Math.max(a[0],b[0])),ih=Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-Math.max(a[1],b[1])),i=iw*ih;
+  return i>=SAME_AREA*a[2]*a[3]&&i>=SAME_AREA*b[2]*b[3]}
+const sameText=(a,b)=>(a||"").replace(/\s+/g," ").trim()===(b||"").replace(/\s+/g," ").trim();
+async function rereadIfChanged(p,b){const m=meta(p,b);
+  if(!m.read||sameArea(m.read,b.bbox))return false;   // a small nudge or resize: the content is the same
+  if(m.typed){log(`Box ${b.id} covers a different area now. Its text is kept because you typed it.`);return false}
   setBusy(true,"read");
   try{const r=await inv('read_region',{path:p.path,lang:$('#lang').value,mode:$('#mode').value,bbox:b.bbox.map(v=>Math.round(v))});
-    // the rectangle stays as the user placed it; the text and what depends on it come from the new place
-    Object.assign(b,{text:r.text,conf:r.conf,fontPx:r.fontPx,fg:r.fg,bg:r.bg,translated:null});m.read=[...b.bbox];
+    m.read=[...b.bbox];
+    if(sameText(r.text,b.text)){Object.assign(b,{fg:r.fg,bg:r.bg});   // same words under the new area: keep text and translation
+      log(`Box ${b.id}: the text under its new area is the same, so its translation is kept.`);return true}
+    // the rectangle stays as the user placed it; the text and what depends on it come from the new area
+    Object.assign(b,{text:r.text,conf:r.conf,fontPx:r.fontPx,fg:r.fg,bg:r.bg,translated:null});
     log(r.text?`Box ${b.id} now reads "${r.text.slice(0,40)}". Its old translation was removed: press Translate on it in Text blocks, or Run all.`
-      :`Box ${b.id}: no text found at its new place. Type it in the Text blocks tab, or move the box back.`);
+      :`Box ${b.id}: no text found in its new area. Type it in the Text blocks tab, or change the box back.`);
     list();return true}
-  catch(e){log(`Could not read the text at the new place of box ${b.id}: ${errText(e)} The old text is kept.`);return false}
+  catch(e){log(`Could not read the text in the new area of box ${b.id}: ${errText(e)} The old text is kept.`);return false}
   finally{setBusy(false)}}
 async function refreshColors(b){try{const c=await inv('sample_colors',{path:P().path,bbox:b.bbox});b.fg=c[0];b.bg=c[1]}catch(e){}}
 async function addBox(rect){const p=P();let b;
@@ -209,7 +214,7 @@ cv.addEventListener('pointermove',e=>{if(view!=='boxes')return;const[x,y]=ptr(e)
   const h=adding?null:hit(x,y);cv.style.cursor=adding?'crosshair':h?(h.k?CUR[h.k]:'move'):'default'});
 cv.addEventListener('pointerup',async()=>{if(!drag)return;const d=drag;drag=null;
   if(d.kind==='add'){adding=false;syncBoxUi();cv.style.cursor='default';if(d.rect[2]>=8&&d.rect[3]>=8)await addBox(d.rect);else render();return}
-  if(d.changed){const p=P();if(!(await rereadIfMoved(p,d.b)))await refreshColors(d.b); // a re-read also returns the colours
+  if(d.changed){const p=P();if(!(await rereadIfChanged(p,d.b)))await refreshColors(d.b); // a re-read also returns the colours
     retypeset(cur)}render()});
 cv.addEventListener('pointercancel',()=>{drag=null;render()});
 // Compare view: the divider follows the pointer while it is pressed (position is kept as a fraction of the page width).
