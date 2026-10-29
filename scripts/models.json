@@ -1,9 +1,9 @@
 {
   "fonts": {
-    "NotoSans-Regular.ttf": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf",
-    "NotoSansJP-Regular.ttf": "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf",
-    "NotoSansSC-Regular.ttf": "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
-    "NotoSansKR-Regular.ttf": "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/Korean/NotoSansCJKkr-Regular.otf"
+    "NotoSans-Regular.ttf": "https://github.com/notofonts/notofonts.github.io/raw/c1d3718e2a0eb25c2567a694ee017061fdaa5f51/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf",
+    "NotoSansJP-Regular.ttf": "https://github.com/notofonts/noto-cjk/raw/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf",
+    "NotoSansSC-Regular.ttf": "https://github.com/notofonts/noto-cjk/raw/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+    "NotoSansKR-Regular.ttf": "https://github.com/notofonts/noto-cjk/raw/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/Korean/NotoSansCJKkr-Regular.otf"
   },
   "models": {
     "en": {
@@ -12,5 +12,21 @@
       "dict.txt": "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/ppocrv5_en_dict.txt"
     }
   },
-  "_help": "PP-OCRv5 English models from GreatV/oar-ocr v0.3.0 release."
+  "pdfium": {
+    "tag": "chromium/7543"
+  },
+  "sha256": {
+    "fonts/NotoSans-Regular.ttf": "478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823",
+    "fonts/NotoSansJP-Regular.ttf": "68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5",
+    "fonts/NotoSansSC-Regular.ttf": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+    "fonts/NotoSansKR-Regular.ttf": "6bcb2a0703aa137e874fc2dffa85f6c21ba9a67fa329e81b8c801663af7e992a",
+    "models/en/det.onnx": "1eb7b4f7ab657ebd1c66d5f79bca7497f29768a2e3c15e52daecbba1a8e4a039",
+    "models/en/rec.onnx": "8307465d3c9ef2ba4055c3bd0be55aafe11f518630212b7598b70ccb376028ac",
+    "models/en/dict.txt": "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6",
+    "pdfium-win-x64": "0b08b606792a6cc593426efdefc6622611bce446d9e0270743846956ea1554ca",
+    "pdfium-mac-arm64": "41c269723b4711793de70ff34e65c00fa79907d6c023741837579e906b846faa",
+    "pdfium-mac-x64": "2510460ac106f14b884598a0da3f53a99e23d79512acf027c5e101c2bb2f26cb",
+    "pdfium-linux-x64": "9329a3c4b19b3c8d0a93af5440f44be84e4bd879a204e47b1a7a160e96809da4"
+  },
+  "_help": "PP-OCRv5 English models from GreatV/oar-ocr v0.3.0 release. Fonts are pinned to a commit of their repository and pdfium to a release of bblanchon/pdfium-binaries (chromium/7543 is the newest API level that pdfium-render 0.8.37 supports, pdfium_7543). `sha256` maps a path under src-tauri/resources (or pdfium-<platform>) to the checksum of the download; a file that does not match is not kept. To update a pin, change the URL or tag, run the script, and replace the checksum it reports."
 }
