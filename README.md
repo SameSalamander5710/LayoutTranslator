@@ -16,3 +16,10 @@ Builds with `cargo check` in `src-tauri`. Models (PP-OCRv5 English) and pdfium d
 
 ## If the app closes by itself
 The release build has no console window. A crash writes its message and a backtrace to `last-error.log` in the app data folder (on Windows `%APPDATA%\com.example.layouttranslator\last-error.log`, on macOS `~/Library/Application Support/com.example.layouttranslator/last-error.log`). Attach that file to a bug report. It is only written when the app crashes. Look through it before sharing it: a panic message can quote text the app was working on.
+
+## Builds and downloads
+Every push to `master` runs the `release` workflow (pushes that only change `.md` files are skipped). It builds for Windows and macOS (Apple Silicon and Intel) and replaces the pre-release **Latest build (master)** (tag `nightly`) on the Releases page with:
+- the installers: the `..._x64-setup.exe` (Windows) and the `.dmg` files (macOS);
+- the portable versions: the zip files with `portable` in the name. Windows: unzip, run `Layout Translator.exe`, nothing is installed (needs the WebView2 runtime that Windows 11 and updated Windows 10 already have). macOS: unzip and open the app.
+
+Pushing a tag such as `v0.1.0` puts the same files into a **draft** release for you to review and publish. All builds are unsigned (Windows: "More info > Run anyway"; macOS: right-click the app > Open). Settings > Actions > General > Workflow permissions must be "Read and write". A manual run (Actions > release > Run workflow) on another branch only keeps the files as workflow artifacts.
