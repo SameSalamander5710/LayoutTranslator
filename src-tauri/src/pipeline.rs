@@ -857,6 +857,13 @@ pub fn png_data_url(im: &DynamicImage) -> Result<String, String> {
 /// differ from 60 by at most a few grey levels (see `fewer_passes_look_the_same`) and are three times faster.
 const RELAX_PASSES: usize = 20;
 
+/// When more than this share of a block's crop looks like text, the stroke mask cannot be trusted (photo, pattern, two
+/// backgrounds side by side). The crop is then rebuilt as a blurred fill from the pixels around it (`frosted_patch`).
+const FROST_COVER: f32 = 0.45;
+/// How fast `push_pull` trusts a coarse cell that is only partly known. 1.0 is the textbook value; higher keeps colours
+/// from two different backgrounds apart for longer instead of averaging them to grey.
+const PULL_TRUST: f32 = 4.0;
+
 /// What erasing one block changes in the page: the new colour of some pixels.
 struct Patch(Vec<(u32, u32, [u8; 3])>);
 impl Patch {
@@ -937,8 +944,12 @@ fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<P
     } } }
     let to_px = |k: usize, v: [f32; 3]| { let (a, c) = px(k % cw, k / cw); (a, c, [v[0].round() as u8, v[1].round() as u8, v[2].round() as u8]) };
     let cover = md.iter().filter(|v| **v).count() as f32 / (cw * ch) as f32;
-    // Too much is marked as text (a photo, a pattern): inpainting would only smear it, so paint the smooth background instead.
-    if cover > 0.45 { return Some(Patch((0..cw * ch).map(|k| to_px(k, bgs[k])).collect())); }
+    // Too much is marked as text (a photo, a pattern, two backgrounds): stroke inpainting would only smear it. Rebuild the
+    // whole crop as a blurred fill of the colours around it. Only if that is impossible, paint the flat background plane.
+    if cover > FROST_COVER {
+        if let Some(p) = frosted_patch(im, b.bg, x0, y0, x1, y1) { return Some(p); }
+        return Some(Patch((0..cw * ch).map(|k| to_px(k, bgs[k])).collect()));
+    }
     let mut buf: Vec<[f32; 3]> = (0..cw * ch).map(|k| {
         if md[k] { bgs[k] } else { let (a, c) = px(k % cw, k / cw); let q = im.get_pixel(a, c); [q[0] as f32, q[1] as f32, q[2] as f32] }
     }).collect();
@@ -947,6 +958,104 @@ fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<P
         for k in 0..3 { buf[j * cw + i][k] = n.iter().map(|(a, c)| buf[c * cw + a][k]).sum::<f32>() / 4.0; }
     } } } }
     Some(Patch((0..cw * ch).filter(|&k| md[k]).map(|k| to_px(k, buf[k])).collect()))
+}
+
+/// Blurred replacement for the crop `x0..=x1, y0..=y1`: the crop is rebuilt only from the pixels around it (so no text
+/// can leak back in), and then softened. Colours from different backgrounds on both sides of the text run into each other.
+fn frosted_patch(im: &image::RgbaImage, bg: [u8; 3], x0: i32, y0: i32, x1: i32, y1: i32) -> Option<Patch> {
+    let (iw, ih) = im.dimensions();
+    let ctx = ((y1 - y0) / 2).clamp(8, 40); // how much surrounding page the fill may look at
+    let (gx0, gy0) = ((x0 - ctx).max(0), (y0 - ctx).max(0));
+    let (gx1, gy1) = ((x1 + ctx).min(iw as i32 - 1), (y1 + ctx).min(ih as i32 - 1));
+    let (gw, gh) = ((gx1 - gx0 + 1) as usize, (gy1 - gy0 + 1) as usize);
+    let mut rgb = Vec::with_capacity(gw * gh);
+    let mut known = Vec::with_capacity(gw * gh);
+    for j in 0..gh { for i in 0..gw {
+        let (a, c) = (gx0 + i as i32, gy0 + j as i32);
+        let q = im.get_pixel(a as u32, c as u32);
+        rgb.push([q[0] as f32, q[1] as f32, q[2] as f32]);
+        known.push(a < x0 || a > x1 || c < y0 || c > y1);
+    } }
+    if !known.iter().any(|k| *k) { return None; }
+    // Take the tilted background plane out first and fill only what is left (the residual). A flat or linear background
+    // then comes back exactly, and the pyramid only has to carry the real detail: photo texture, a second background.
+    let plane = background_plane(im, gx0 as u32, gy0 as u32, gw, gh, bg);
+    let res: Vec<[f32; 3]> = (0..gw * gh).map(|k| [0, 1, 2].map(|c| rgb[k][c] - plane[k][c])).collect();
+    let mut g = push_pull(&res, &known, gw, gh);
+    for k in 0..gw * gh {
+        // real pixels around the hole stay real, so the edge is seamless
+        g[k] = if known[k] { rgb[k] } else { [0, 1, 2].map(|c| (g[k][c] + plane[k][c]).clamp(0.0, 255.0)) };
+    }
+    let r = ((y1 - y0) / 6).clamp(2, 10) as usize;
+    for _ in 0..2 { box_blur(&mut g, gw, gh, r); } // two box blurs are close to a Gaussian
+    let px = (0..gw * gh).filter(|&k| !known[k]).map(|k| {
+        let v = g[k];
+        ((gx0 + (k % gw) as i32) as u32, (gy0 + (k / gw) as i32) as u32, [v[0].round().clamp(0., 255.) as u8, v[1].round().clamp(0., 255.) as u8, v[2].round().clamp(0., 255.) as u8])
+    }).collect();
+    Some(Patch(px))
+}
+
+/// Fills the unknown pixels of a `w * h` colour grid from the known ones ("push-pull" / normalised convolution on an
+/// image pyramid). Known colours are averaged into ever coarser levels (push); then each level is filled from the
+/// coarser one below it (pull). Cost is about 1.3 passes over the grid, no iteration, and no model.
+fn push_pull(rgb: &[[f32; 3]], known: &[bool], w: usize, h: usize) -> Vec<[f32; 3]> {
+    // Every cell holds [r*weight, g*weight, b*weight, weight]; averaging four cells keeps colour and weight in step.
+    let base: Vec<[f32; 4]> = rgb.iter().zip(known).map(|(c, &k)| if k { [c[0], c[1], c[2], 1.0] } else { [0.0; 4] }).collect();
+    let mut lv: Vec<(Vec<[f32; 4]>, usize, usize)> = vec![(base, w, h)];
+    while lv.last().map_or(false, |l| l.1 > 1 || l.2 > 1) {
+        let (src, sw, sh) = lv.last().unwrap();
+        let (dw, dh) = ((sw + 1) / 2, (sh + 1) / 2);
+        let mut dst = vec![[0f32; 4]; dw * dh];
+        for y in 0..*sh { for x in 0..*sw {
+            let s = src[y * sw + x];
+            let d = &mut dst[(y / 2) * dw + x / 2];
+            for k in 0..4 { d[k] += s[k] * 0.25; }
+        } }
+        lv.push((dst, dw, dh));
+    }
+    let own = |c: &[f32; 4], fallback: [f32; 3]| if c[3] > 1e-6 { [c[0] / c[3], c[1] / c[3], c[2] / c[3]] } else { fallback };
+    let mut cur = vec![own(&lv[lv.len() - 1].0[0], [127.0; 3])];
+    for l in (0..lv.len() - 1).rev() {
+        let (src, sw, sh) = &lv[l];
+        let (cw, ch) = (lv[l + 1].1, lv[l + 1].2);
+        let mut next = Vec::with_capacity(sw * sh);
+        for y in 0..*sh { for x in 0..*sw {
+            // bilinear sample of the coarser level at this pixel's centre
+            let fx = ((x as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, (cw - 1) as f32);
+            let fy = ((y as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, (ch - 1) as f32);
+            let (ix, iy) = (fx as usize, fy as usize);
+            let (jx, jy) = ((ix + 1).min(cw - 1), (iy + 1).min(ch - 1));
+            let (tx, ty) = (fx - ix as f32, fy - iy as f32);
+            let mut up = [0f32; 3];
+            for k in 0..3 {
+                let top = cur[iy * cw + ix][k] * (1.0 - tx) + cur[iy * cw + jx][k] * tx;
+                let bot = cur[jy * cw + ix][k] * (1.0 - tx) + cur[jy * cw + jx][k] * tx;
+                up[k] = top * (1.0 - ty) + bot * ty;
+            }
+            let c = &src[y * sw + x];
+            let (a, o) = ((c[3] * PULL_TRUST).clamp(0.0, 1.0), own(c, up)); // a cell with a quarter of its pixels known is trusted fully
+            next.push([0, 1, 2].map(|k| o[k] * a + up[k] * (1.0 - a)));
+        } }
+        cur = next;
+    }
+    cur
+}
+
+/// Box blur along x, then y, with edge pixels repeated.
+fn box_blur(g: &mut [[f32; 3]], w: usize, h: usize, r: usize) {
+    let mut tmp = g.to_vec();
+    for y in 0..h { for x in 0..w {
+        let (a, b) = (x.saturating_sub(r), (x + r).min(w - 1));
+        let mut s = [0f32; 3];
+        for i in a..=b { for k in 0..3 { s[k] += g[y * w + i][k]; } }
+        for k in 0..3 { tmp[y * w + x][k] = s[k] / (b - a + 1) as f32; }
+    } }
+    for y in 0..h { for x in 0..w {
+        let (a, b) = (y.saturating_sub(r), (y + r).min(h - 1));
+        let mut s = [0f32; 3];
+        for j in a..=b { for k in 0..3 { s[k] += tmp[j * w + x][k]; } }
+        for k in 0..3 { g[y * w + x][k] = s[k] / (b - a + 1) as f32; }
+    } }
 }
 
 // ---------- PDF in (pdfium) ----------
@@ -1377,6 +1486,63 @@ mod tests {
             let worst = a.pixels().zip(b.pixels()).flat_map(|(p, q)| (0..3).map(move |k| (p[k] as i32 - q[k] as i32).abs())).max().unwrap();
             assert!(worst <= 20, "size {size}: 20 passes differ from 60 by {worst} grey levels");
         }
+    }
+
+    /// A solid white bar stands in for bold text that covers most of its box (the case that used to become a flat block).
+    fn bar_on(mut im: image::RgbaImage, b: &Block) -> image::RgbaImage {
+        let [x, y, w, h] = b.bbox;
+        draw_filled_rect_mut(&mut im, Rect::at(x as i32, y as i32).of_size(w as u32, h as u32), Rgba([255, 255, 255, 255]));
+        im
+    }
+
+    #[test]
+    fn push_pull_reproduces_a_constant() {
+        let (w, h) = (37usize, 21usize);
+        let rgb = vec![[10.0, 20.0, 30.0]; w * h];
+        let known: Vec<bool> = (0..w * h).map(|k| (k % w < 5) || (k % w > 30) || (k / w < 4) || (k / w > 16)).collect();
+        for p in push_pull(&rgb, &known, w, h) { for (c, v) in p.iter().zip([10.0, 20.0, 30.0]) { assert!((c - v).abs() < 0.01); } }
+    }
+
+    #[test]
+    fn frosted_fill_keeps_two_backgrounds_apart() {
+        let (navy, gold) = ([30u8, 60, 120], [235u8, 200, 90]);
+        let mut im = image::RgbaImage::new(400, 100);
+        for (x, _, p) in im.enumerate_pixels_mut() { let c = if x < 200 { navy } else { gold }; *p = Rgba([c[0], c[1], c[2], 255]); }
+        let b = Block { id: 1, bbox: [60.0, 30.0, 280.0, 40.0], text: String::new(), translated: None, conf: 1.0, font_px: 30.0, fg: [255; 3], bg: [130, 130, 105] };
+        let page = bar_on(im, &b);
+        let mut out = page.clone();
+        erase_patch(&page, &b).unwrap().apply(&mut out);
+        let near = |p: &Rgba<u8>, c: [u8; 3]| (0..3).all(|k| (p[k] as i32 - c[k] as i32).abs() <= 25);
+        assert!(near(out.get_pixel(80, 50), navy), "left of the split must stay navy, got {:?}", out.get_pixel(80, 50));
+        assert!(near(out.get_pixel(320, 50), gold), "right of the split must stay gold, got {:?}", out.get_pixel(320, 50));
+        assert!(out.pixels().all(|p| p[0].min(p[1]).min(p[2]) < 200), "some of the text is left");
+    }
+
+    #[test]
+    fn frosted_fill_follows_a_photo_instead_of_one_flat_colour() {
+        let truth = |x: u32| (128.0 + 100.0 * (x as f32 / 25.0).sin()) as u8;
+        let mut im = image::RgbaImage::new(400, 100);
+        for (x, _, p) in im.enumerate_pixels_mut() { let v = truth(x); *p = Rgba([v, 255 - v, 128, 255]); }
+        let b = Block { id: 1, bbox: [60.0, 30.0, 280.0, 40.0], text: String::new(), translated: None, conf: 1.0, font_px: 30.0, fg: [255; 3], bg: [128; 3] };
+        let page = bar_on(im, &b);
+        let mut out = page.clone();
+        erase_patch(&page, &b).unwrap().apply(&mut out);
+        let row: Vec<i32> = (60..340u32).map(|x| out.get_pixel(x, 50)[0] as i32).collect();
+        let spread = row.iter().max().unwrap() - row.iter().min().unwrap();
+        assert!(spread > 60, "the fill is almost one colour (spread {spread})");
+    }
+
+    #[test]
+    fn frosted_fill_survives_page_edges_and_a_box_as_big_as_the_page() {
+        let im = image::RgbaImage::from_pixel(60, 30, Rgba([40, 90, 160, 255]));
+        let corner = Block { id: 1, bbox: [0.0, 0.0, 50.0, 20.0], text: String::new(), translated: None, conf: 1.0, font_px: 20.0, fg: [255; 3], bg: [0; 3] };
+        let page = bar_on(im.clone(), &corner);
+        let mut out = page.clone();
+        erase_patch(&page, &corner).unwrap().apply(&mut out);
+        assert!(out.pixels().all(|p| p[0] < 100), "corner text is left");
+        let whole = Block { bbox: [0.0, 0.0, 60.0, 30.0], ..corner };
+        let page = bar_on(im, &whole);
+        assert!(erase_patch(&page, &whole).is_some()); // nothing is known around the hole: must fall back, not panic
     }
 
     #[test]

@@ -35,6 +35,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [x] E1. Classical diffusion fill implemented; needs fixture testing.
 - [x] E2. The stroke threshold follows the text contrast (24 to 60 instead of a fixed 60), and the background colour is a tilted plane fitted to the non-text pixels, so gradients work. When too much looks like text (over 45%), the box is painted with that smooth background instead of a flat colour.
 - [ ] E3. Optional: replace it with a LaMa ONNX model through `ort` for photos and textures. Keep the classical fill as the fallback.
+- [x] E4. When over 45% of a box looks like text (photo, pattern, two backgrounds), the box is no longer painted with one flat colour. It is rebuilt from the pixels around it (push-pull pyramid fill on the residual of the background plane, then a light blur), so the area looks like frosted glass. See `frosted_patch`, `FROST_COVER`, `PULL_TRUST`. Tune `FROST_COVER` on real pages.
 
 ## F. Quality
 - [x] F1a. `wrap()` follows the Unicode line breaking rules (CJK breaks, no closing punctuation at a line start); overlong words are cut between grapheme clusters.
