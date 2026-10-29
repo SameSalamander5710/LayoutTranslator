@@ -192,7 +192,12 @@ async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String, lang: Optio
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| { clear_pages(app.handle()); Ok(()) })
+        .setup(|app| {
+            clear_pages(app.handle());
+            // A panic that is not inside a command would close the app silently; keep a trace for bug reports.
+            if let Ok(d) = app.path().app_data_dir() { layout_translator::crashlog::install(d.join("last-error.log")); }
+            Ok(())
+        })
         .on_window_event(|window, event| { if let tauri::WindowEvent::Destroyed = event { clear_pages(window.app_handle()); } })
         .manage(EngineCache::default())
         .manage(pipeline::TranslationCache::default())
