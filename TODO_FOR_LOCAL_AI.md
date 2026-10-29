@@ -55,7 +55,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 
 ## I. Release
 - [x] I1. Both lock files are committed. The workflow uses `npm ci` and `cargo ... --locked`, so a release cannot pick up newer crates. Commit `src-tauri/Cargo.lock` whenever `Cargo.toml` changes, or the release build fails.
-- [ ] I2. The Intel runner label is now `macos-15-intel` (`macos-13` was retired on 2025-12-04). Still to do: run the workflow once with `workflow_dispatch` and fix failures. GitHub drops Intel macOS after the macOS 15 image is retired in Fall 2027.
+- [ ] I2. The workflow builds Windows x64 and macOS Apple Silicon. The Intel Mac build was removed: `ort-sys` 2.0.0-rc.13 (pinned exactly by `oar-ocr-core` 0.10.1) has no prebuilt ONNX Runtime for `x86_64-apple-darwin`, and Microsoft's last Intel macOS build is 1.23.2 while `ort` rc.13 needs 1.28. To restore it: build ONNX Runtime 1.28 from source on a `macos-15-intel` runner (cache it), point the build at it with `ORT_LIB_LOCATION`, and add the matrix entry back (`suffix: macos-x64`, `target: x86_64-apple-darwin`). Or wait for an `ort`/`oar-ocr` release that supports Intel again. Still to do: run the workflow once with `workflow_dispatch` and fix failures.
 - [ ] I3. macOS: confirm pdfium and ONNX Runtime dylibs load from inside the `.app`, and document the unsigned-app workaround (or set up signing/notarization).
 - [ ] I4. Windows: document the SmartScreen warning, or set up code signing.
 - [x] I5. `PLAN.md` was updated to match the code (Google Translate dropped). Keep it in sync as things change.

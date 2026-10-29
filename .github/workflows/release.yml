@@ -37,10 +37,10 @@ jobs:
             suffix: macos-arm64
             target: aarch64-apple-darwin
             args: '--target aarch64-apple-darwin -- --locked'
-          - platform: macos-15-intel        # Intel. GitHub retired macos-13 on 2025-12-04; this label lasts until the macOS 15 image is retired (Fall 2027)
-            suffix: macos-x64
-            target: x86_64-apple-darwin
-            args: '--target x86_64-apple-darwin -- --locked'
+          # No Intel Mac build: ort-sys 2.0.0-rc.13 (pinned by oar-ocr) has no prebuilt ONNX Runtime for x86_64-apple-darwin,
+          # and Microsoft stopped publishing Intel macOS builds after ONNX Runtime 1.23.2 (ort rc.13 needs 1.28). To bring it
+          # back, ONNX Runtime 1.28 would have to be built from source on a macos-15-intel runner and passed to the build
+          # with ORT_LIB_LOCATION; see TODO_FOR_LOCAL_AI.md I2.
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4

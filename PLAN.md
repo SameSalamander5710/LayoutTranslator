@@ -96,7 +96,7 @@ Later, split `pipeline.rs` into modules (`ocr`, `translate`, `render`, `pdf`) wi
 - GitHub Actions with `tauri-apps/tauri-action` builds on `windows-latest` and `macos-latest` runners and attaches the installers to a draft release (workflow included). You can build the Mac version without owning a Mac.
 - **Unsigned apps show warnings.** Windows SmartScreen warns on unsigned installers; macOS Gatekeeper blocks unsigned/un-notarized apps unless the user right-clicks → Open. Proper macOS distribution needs a paid Apple Developer account for notarization **(verify current price)**. For a hobby release, document the workaround in the README.
 - ONNX Runtime must ship next to the app (a DLL on Windows, a dylib on macOS). This is the most likely "works on my machine" trap. Test the installer on a clean machine **(verify how `ort` links on each platform)**.
-- Provide Apple Silicon and Intel macOS builds as separate matrix entries, or a universal build at roughly double the size.
+- macOS: Apple Silicon only for now. An Intel (or universal) build is blocked because no prebuilt ONNX Runtime exists for Intel macOS any more (see TODO_FOR_LOCAL_AI.md I2).
 
 ## 7. Honest expectations and risks
 

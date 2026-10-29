@@ -18,7 +18,7 @@ Builds with `cargo check` in `src-tauri`. Models (PP-OCRv5 English) and pdfium d
 The release build has no console window. A crash writes its message and a backtrace to `last-error.log` in the app data folder (on Windows `%APPDATA%\com.example.layouttranslator\last-error.log`, on macOS `~/Library/Application Support/com.example.layouttranslator/last-error.log`). Attach that file to a bug report. It is only written when the app crashes. Look through it before sharing it: a panic message can quote text the app was working on.
 
 ## Builds and downloads
-Every push to `master` runs the `release` workflow (pushes that only change `.md` files are skipped). It builds for Windows and macOS (Apple Silicon and Intel) and replaces the pre-release **Latest build (master)** (tag `nightly`) on the Releases page with:
+Every push to `master` runs the `release` workflow (pushes that only change `.md` files are skipped). It builds for Windows (x64) and macOS (Apple Silicon only; there is no Intel Mac build, see `TODO_FOR_LOCAL_AI.md` I2) and replaces the pre-release **Latest build (master)** (tag `nightly`) on the Releases page with:
 - the installers: the `..._x64-setup.exe` (Windows) and the `.dmg` files (macOS);
 - the portable versions: the zip files with `portable` in the name. Windows: unzip, run `Layout Translator.exe`, nothing is installed (needs the WebView2 runtime that Windows 11 and updated Windows 10 already have). macOS: unzip and open the app.
 
