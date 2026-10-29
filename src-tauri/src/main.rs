@@ -143,12 +143,24 @@ async fn render_page(app: AppHandle, path: String, blocks: Vec<Block>, out: Opti
     pipeline::png_data_url(&image::DynamicImage::ImageRgba8(im))
 }
 
+// The page images and text layers of the open PDF live in the app cache, one folder per running app (`pages-<pid>`), so two
+// app windows never delete each other's files. The folder is removed when the app starts and when its window closes,
+// because the pages of a private document must not stay on disk.
+fn pages_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_cache_dir().map_err(|e| e.to_string())?.join(format!("pages-{}", std::process::id())))
+}
+fn clear_pages(app: &AppHandle) {
+    if let Ok(d) = pages_dir(app) { let _ = std::fs::remove_dir_all(d); }
+    // the single shared folder that earlier versions used
+    if let Ok(c) = app.path().app_cache_dir() { let _ = std::fs::remove_dir_all(c.join("pages")); }
+}
+
 // PDFs are rasterised to page PNGs in the app cache; images pass through as a single page.
 #[tauri::command]
 async fn open_document(app: AppHandle, path: String) -> Result<Vec<String>, String> {
     if !path.to_lowercase().ends_with(".pdf") { return Ok(vec![path]); }
     let lib = app.path().resource_dir().map_err(|e| e.to_string())?.join("pdfium");
-    let out = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("pages");
+    let out = pages_dir(&app)?;
     let _ = std::fs::remove_dir_all(&out);
     pipeline::rasterise_pdf(Path::new(&path), &lib, &out)
 }
@@ -180,6 +192,8 @@ async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String, lang: Optio
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| { clear_pages(app.handle()); Ok(()) })
+        .on_window_event(|window, event| { if let tauri::WindowEvent::Destroyed = event { clear_pages(window.app_handle()); } })
         .manage(EngineCache::default())
         .manage(pipeline::TranslationCache::default())
         .manage(RunControl::default())
