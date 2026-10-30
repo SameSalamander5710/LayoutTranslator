@@ -45,6 +45,8 @@ details.opts summary{cursor:pointer;font-size:13px}details.opts summary .st{marg
 .hint{color:var(--mute)}textarea{resize:vertical;font:inherit}
 .blk.sel{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}.blk textarea.src{color:var(--mute)}
 button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;flex:1;min-width:150px}
+button.ib{display:inline-flex;align-items:center;justify-content:center;padding:5px 8px}button.ib svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.vsep{width:1px;align-self:stretch;background:var(--line);margin:0 2px}
 .blk{border-bottom:1px solid var(--line);padding:8px 0}
 .blk small{color:var(--mute);display:block}
 .blk textarea{margin-top:4px;resize:vertical;min-height:38px}
@@ -104,7 +106,15 @@ button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;
   <div class="bar"><button id="prev" aria-label="Previous page">◀</button><span id="pn">–</span><button id="next" aria-label="Next page">▶</button>
     <span class="sp"></span>
     <span class="zc" id="zoomctl" role="group" aria-label="Zoom"><button id="zout" aria-label="Zoom out">−</button><span id="zl" aria-live="polite">100%</span><button id="zin" aria-label="Zoom in">+</button><button id="zfit" aria-label="Fit page to the pane">Fit</button></span></div>
-  <div class="bar" id="boxbar" hidden><button id="addbox">+ Add box</button><button id="delbox" disabled>Delete box</button><span class="note" id="boxhint"></span></div>
+  <div class="bar" id="boxbar" hidden>
+    <button id="addbox" class="ib" aria-label="Add box" title="Add a box"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button id="delbox" class="ib" aria-label="Delete box" title="Delete the selected box (Delete)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button>
+    <span class="vsep" aria-hidden="true"></span>
+    <button id="undo" class="ib" aria-label="Undo" title="Undo (Ctrl+Z). The last 10 changes are kept." disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-4"/></svg></button>
+    <button id="redo" class="ib" aria-label="Redo" title="Redo (Ctrl+Y)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h4"/></svg></button>
+    <span class="vsep" aria-hidden="true"></span>
+    <button id="reset" class="ib" aria-label="Reset detection" title="Reset detection: drop all changes to the boxes and detect this page again (Undo brings them back)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v5h-5"/></svg></button>
+    <span class="note" id="boxhint"></span></div>
   <div class="stage" id="stage"><canvas id="cv" width="620" height="760"></canvas></div>
   <div id="blocksView" hidden><p class="note" style="margin-top:0">Edit any translation here; the page re-renders.</p><div id="blocks"><p class="note">Run the pipeline to see detected blocks.</p></div></div>
 </section>
@@ -167,8 +177,20 @@ function dragBox(d,x,y){const dx=x-d.x0,dy=y-d.y0,W=cv.width,H=cv.height,min=8;l
   if(d.k.includes('w'))bx=clamp(bx+dx,0,x1-min);if(d.k.includes('e'))x1=clamp(x1+dx,bx+min,W);
   if(d.k.includes('n'))by=clamp(by+dy,0,y1-min);if(d.k.includes('s'))y1=clamp(y1+dy,by+min,H);
   return[bx,by,x1-bx,y1-by]}
-function syncBoxUi(){const on=!!P().ocr;$('#addbox').disabled=!on||busy;$('#addbox').textContent=adding?'Cancel':'+ Add box';$('#delbox').disabled=sel==null||busy;
-  $('#boxhint').textContent=!on?'Run the detection first to edit boxes.':adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it. A box that covers a different area reads the text under it.'}
+// ---- Undo and redo of box changes. Each page keeps its last HIST_MAX changes (add, delete, move, resize, reset). A step
+// stores the blocks together with `meta` (what each box's text was read from), so an undo brings back both. ----
+const HIST_MAX=10;
+const hist=p=>(p.hist??={past:[],future:[]});
+const snap=p=>JSON.stringify({b:p.blocks,m:p.meta||{}});
+function remember(p,s){const h=hist(p);h.past.push(s);if(h.past.length>HIST_MAX)h.past.shift();h.future=[]}
+function stepHist(dir){if(busy||view!=='boxes')return;const p=P(),h=hist(p),from=dir<0?h.past:h.future,to=dir<0?h.future:h.past;if(!from.length)return;
+  to.push(snap(p));if(to.length>HIST_MAX)to.shift();
+  const o=JSON.parse(from.pop());p.blocks=o.b;p.meta=o.m;if(sel!=null&&!p.blocks.some(b=>b.id===sel))sel=null;
+  syncBoxUi();list();render();retypeset(cur)}
+function syncBoxUi(){const p=P(),on=!!p.ocr,h=p.hist||{past:[],future:[]};
+  $('#addbox').disabled=!on||busy;$('#addbox').classList.toggle('on',adding);$('#addbox').title=adding?'Cancel adding a box (Esc)':'Add a box';
+  $('#delbox').disabled=sel==null||busy;$('#undo').disabled=!h.past.length||busy;$('#redo').disabled=!h.future.length||busy;$('#reset').disabled=!pg.length||busy;
+  $('#boxhint').textContent=!on?(busy?'Detecting …':'This page has no detection yet. Use the circular arrow to detect it.'):adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it. A box that covers a different area reads the text under it.'}
 function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i).catch(e=>log("Error: "+errText(e))),500)}
 // What a box's text was read from. A box whose area changes (moved, widened, made taller or shorter) reads the text under
 // its new area, otherwise it would keep the old text and translation while covering something else. Kept per page by block
@@ -197,24 +219,24 @@ async function refreshColors(b){try{const c=await inv('sample_colors',{path:P().
 async function addBox(rect){const p=P();let b;
   try{b=await inv('read_region',{path:p.path,lang:$('#lang').value,mode:$('#mode').value,bbox:rect.map(v=>Math.round(v))})}
   catch(e){log("Could not read text in the new box: "+e);b={id:0,bbox:rect,text:"",translated:null,conf:0,fontPx:rect[3]*.6,fg:[0,0,0],bg:[255,255,255]}}
-  b.id=Math.max(0,...p.blocks.map(k=>k.id))+1;p.blocks.push(b);sel=b.id;meta(p,b).read=[...b.bbox];
+  b.id=Math.max(0,...p.blocks.map(k=>k.id))+1;remember(p,snap(p));p.blocks.push(b);sel=b.id;meta(p,b).read=[...b.bbox];
   log(b.text?`Added box ${b.id}: "${b.text.slice(0,40)}"`:`Added box ${b.id} (no text found; type it in the Text blocks tab).`);
   syncBoxUi();list();render();retypeset(cur)}
-function delBox(){if(sel==null)return;const p=P();p.blocks=p.blocks.filter(b=>b.id!==sel);sel=null;syncBoxUi();list();render();retypeset(cur)}
+function delBox(){if(sel==null)return;const p=P();remember(p,snap(p));p.blocks=p.blocks.filter(b=>b.id!==sel);sel=null;syncBoxUi();list();render();retypeset(cur)}
 async function retranslate(id){if(busy)return log(busyMsg());const i=cur,p=pg[i];setBusy(true,"retranslate");log(`Translating block ${id} …`);
   try{const r=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts(),only:[id]});p.blocks=r.blocks;
     if(r.missing)log(`Block ${id} got no translation. Try again, or check the server.`);
     if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}finally{setBusy(false)}}
 cv.addEventListener('pointerdown',e=>{if(view!=='boxes'||e.button!==0||!P().ocr||busy)return;const[x,y]=ptr(e);
   if(adding)drag={kind:'add',x0:x,y0:y,rect:[x,y,0,0]};
-  else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;const m=meta(P(),h.b);m.read??=[...h.b.bbox];drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox]}}
+  else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;const m=meta(P(),h.b);m.read??=[...h.b.bbox];drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox],p:P(),before:snap(P())}}
   cv.setPointerCapture(e.pointerId);syncBoxUi();render()});
 cv.addEventListener('pointermove',e=>{if(view!=='boxes')return;const[x,y]=ptr(e);
   if(drag){if(drag.kind==='add')drag.rect=[Math.min(x,drag.x0),Math.min(y,drag.y0),Math.abs(x-drag.x0),Math.abs(y-drag.y0)];else{drag.b.bbox=dragBox(drag,x,y);drag.changed=true}render();return}
   const h=adding?null:hit(x,y);cv.style.cursor=adding?'crosshair':h?(h.k?CUR[h.k]:'move'):'default'});
 cv.addEventListener('pointerup',async()=>{if(!drag)return;const d=drag;drag=null;
   if(d.kind==='add'){adding=false;syncBoxUi();cv.style.cursor='default';if(d.rect[2]>=8&&d.rect[3]>=8)await addBox(d.rect);else render();return}
-  if(d.changed){const p=P();if(!(await rereadIfChanged(p,d.b)))await refreshColors(d.b); // a re-read also returns the colours
+  if(d.changed){const p=d.p;remember(p,d.before);syncBoxUi();if(!(await rereadIfChanged(p,d.b)))await refreshColors(d.b); // a re-read also returns the colours
     retypeset(cur)}render()});
 cv.addEventListener('pointercancel',()=>{drag=null;render()});
 // Compare view: the divider follows the pointer while it is pressed (position is kept as a fraction of the page width).
@@ -225,8 +247,10 @@ cv.addEventListener('pointermove',e=>{if(view==='cmp'&&cmpDrag)moveSplit(e)});
 cv.addEventListener('pointerup',()=>{cmpDrag=false});
 cv.addEventListener('pointercancel',()=>{cmpDrag=false});
 $('#addbox').onclick=()=>{adding=!adding;syncBoxUi();cv.style.cursor=adding?'crosshair':'default'};
-$('#delbox').onclick=delBox;
+$('#delbox').onclick=delBox;$('#undo').onclick=()=>stepHist(-1);$('#redo').onclick=()=>stepHist(1);$('#reset').onclick=()=>resetDetection();
 document.addEventListener('keydown',e=>{if(view!=='boxes')return;
+  if((e.ctrlKey||e.metaKey)&&!e.altKey&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){const k=e.key.toLowerCase();
+    if(k==='z'){e.preventDefault();stepHist(e.shiftKey?1:-1);return}if(k==='y'){e.preventDefault();stepHist(1);return}}
   if(e.key==='Escape'&&adding){adding=false;syncBoxUi();render();return}
   if((e.key==='Delete'||e.key==='Backspace')&&sel!=null&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){e.preventDefault();delBox()}});
 
@@ -274,8 +298,8 @@ const MODES={hybrid:"PDFs: selectable text is used directly, OCR reads only what
   text:"Only selectable PDF text is translated. Text inside images or scans is ignored, and no OCR runs."};
 function applyMode(){const m=$('#mode').value;$('#modeNote').textContent=MODES[m]||"";$('#lang').disabled=m==="text"}
 $('#mode').addEventListener('change',()=>{applyMode();
-  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.blocks=[];p.meta={};p.out=null;p.typeset=false});setSave(false);
-  $$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});log("Detection method changed. Press Run all to detect again.");setView('orig');go(cur)});
+  if(!pg.length)return;pg.forEach(p=>{p.ocr=false;p.failed=false;p.blocks=[];p.meta={};p.hist=null;p.out=null;p.typeset=false});setSave(false);
+  $$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});log("Detection method changed. Detecting again …");setView('orig');go(cur)});
 // Decoded page images are large (about 15 MB each for an A4 page), so only the current page and its two neighbours keep them.
 // `go` reloads a missing original; `ensureOut` redraws a missing translated page from the blocks.
 function trimMemory(){pg.forEach((p,i)=>{if(Math.abs(i-cur)>1){p.orig=null;p.out=null}})}
@@ -284,9 +308,10 @@ async function ensureOut(){const i=cur,p=pg[i];if(!p||p.out||!p.typeset||p.regen
   if(i===cur&&(view==='out'||view==='cmp'))render()}
 async function go(i){cur=Math.max(0,Math.min(pg.length-1,i));sel=null;adding=false;const p=P();
   try{if(p.path&&!p.orig)p.orig=await loadImg(await inv('preview',{path:p.path}))}catch(e){log("Error: could not show the page: "+errText(e))}
-  $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";syncBoxUi();render();list();trimMemory();ensureOut()}
+  $('#pn').textContent=pg.length?`Page ${cur+1} / ${pg.length}`:"–";syncBoxUi();render();list();trimMemory();ensureOut();autoDetect(cur)}
 async function setDoc(path){if(busy)return log(busyMsg());setBusy(true,"open");
-  try{await openDoc(path)}finally{setBusy(false)}}
+  try{await openDoc(path)}finally{setBusy(false)}
+  autoDetect(cur)} // detection is fast, so it starts as soon as the file is open
 async function openDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
   try{pg=(await inv('open_document',{path})).map(p=>({path:p,blocks:[],orig:null,out:null,ocr:false}))}catch(e){return log("Error: "+e)}
   isPdf=/\.pdf$/i.test(path);
@@ -301,10 +326,30 @@ async function typeset(i){const p=pg[i],my=p.seq=(p.seq||0)+1;
 let stopReq=false;class Stopped extends Error{}
 const chk=()=>{if(stopReq)throw new Stopped()};
 function running(on){setBusy(on,"run");$('#stop').hidden=!on;$('#stop').disabled=false;$('#prog').hidden=!on;if(on)stopReq=false}
+// Detection of one page: OCR and selectable PDF text, then the colours of every box. It runs when a file is opened, when a
+// page is shown for the first time, in Run all (pages that are already detected are skipped, so box edits are kept) and
+// from the Reset button.
+async function detectPage(i,lab){const p=pg[i];setStep('ocr','run',lab);
+  const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});
+  p.blocks=r.blocks;p.meta={};p.orig=await loadImg(r.original);p.ocr=true;p.failed=false;p.out=null;p.typeset=false;
+  if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
+  else if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`);
+  setStep('ocr','done',"done")}
+async function autoDetect(i){const p=pg[i];if(!p||!p.path||p.ocr||p.failed||busy)return; // a page that failed is not retried by itself: Reset does that
+  const lab=`page ${i+1}/${pg.length}`;setBusy(true,"detect");
+  try{await detectPage(i,lab);log(`${lab}: ${p.blocks.length} text box(es) found. Fine-tune them in the Detected text tab, then press Run all.`)}
+  catch(e){p.failed=true;setStep('ocr','',"failed");log(`${lab}: detection failed: ${errText(e)}`)}
+  finally{setBusy(false)}
+  if(i===cur)await go(i);else autoDetect(cur)} // the user moved on while this page was being detected
+async function resetDetection(){if(busy)return log(busyMsg());const i=cur,p=pg[i];if(!p)return;
+  const before=p.ocr?snap(p):null,lab=`page ${i+1}/${pg.length}`;setBusy(true,"detect");
+  try{await detectPage(i,lab);if(before)remember(p,before); // the boxes the user had stay one Undo away
+    log(`${lab}: detection reset, ${p.blocks.length} text box(es).`)}
+  catch(e){if(!p.ocr)p.failed=true;log(`${lab}: detection failed: ${errText(e)}`)}
+  finally{setBusy(false)}
+  if(i===cur)await go(i)}
 async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
-  chk();if(!p.ocr){setStep('ocr','run',lab);const r=await inv('run_ocr',{path:p.path,lang:$('#lang').value,mode:$('#mode').value});p.blocks=r.blocks;p.meta={};p.orig=await loadImg(r.original);p.ocr=true;
-    if($('#mode').value==='text'&&!r.layerLines)log(`${lab}: no selectable text found.`);
-    else if(r.layerLines)log(`${lab}: ${r.layerLines} selectable text lines used, OCR ${r.ocrRan?'ran on the rest':'skipped'}.`)}
+  chk();if(!p.ocr)await detectPage(i,lab);
   setStep('ocr','done',"done");chk();setStep('tr','run',lab);
   if(p.blocks.length){const o=opts();if(o.maxParallel>1)log(`${lab}: translating ${p.blocks.length} blocks, up to ${o.maxParallel} at once`);
     const r=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:o});p.blocks=r.blocks;
