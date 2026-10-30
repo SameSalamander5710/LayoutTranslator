@@ -52,6 +52,9 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
 .blk textarea{margin-top:4px;resize:vertical;min-height:38px}
 #log{font:12px/1.5 Consolas,monospace;color:var(--mute);flex:1;min-height:140px;overflow:auto;margin-top:10px;white-space:pre-wrap;border:1px solid var(--line);border-radius:6px;padding:8px;background:var(--bg)}
 .note{font-size:12px;color:var(--mute);margin-top:8px}
+.tip{position:relative;display:inline-flex}
+.tipbox{position:fixed;z-index:1000;width:260px;padding:8px 10px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);font-size:12px;line-height:1.4;white-space:normal;text-align:left}
+button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:transparent;border-radius:50%;color:var(--mute)}
 .combo{position:relative}.combo input{padding-right:30px}
 .cbtn{position:absolute;right:2px;top:2px;bottom:2px;border:0;background:transparent;padding:0 9px;color:var(--mute)}
 .clist{position:fixed;z-index:50;margin:0;padding:4px 0;list-style:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);overflow:auto}
@@ -75,8 +78,7 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
   <p class="note" id="modeNote"></p>
   <label for="lang">Text language for OCR</label>
   <select id="lang"></select>
-  <div class="row" style="margin-top:6px"><button id="mdir">Open models folder</button></div>
-  <p class="note">To add a language, put a folder named after it (for example <b>models/fr</b>) in that folder with det.onnx, rec.onnx and dict.txt, then restart the app.</p>
+  <div class="row" style="margin-top:6px;align-items:center"><button id="mdir">Open models folder</button><span class="tip"><button type="button" id="mdirHelp" class="ib q" aria-label="How to add a language" aria-describedby="mdirHelpBox">?</button><span class="tipbox" id="mdirHelpBox" role="tooltip" hidden>To add a language, put a folder named after it (for example <b>models/fr</b>) in that folder with det.onnx, rec.onnx and dict.txt, then restart the app.</span></span></div>
 
   <h2 style="margin-top:18px">2. Translation endpoint</h2>
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
@@ -190,7 +192,7 @@ function stepHist(dir){if(busy||view!=='boxes')return;const p=P(),h=hist(p),from
 function syncBoxUi(){const p=P(),on=!!p.ocr,h=p.hist||{past:[],future:[]};
   $('#addbox').disabled=!on||busy;$('#addbox').classList.toggle('on',adding);$('#addbox').title=adding?'Cancel adding a box (Esc)':'Add a box';
   $('#delbox').disabled=sel==null||busy;$('#undo').disabled=!h.past.length||busy;$('#redo').disabled=!h.future.length||busy;$('#reset').disabled=!pg.length||busy;
-  $('#boxhint').textContent=!on?(busy?'Detecting …':'This page has no detection yet. Use the circular arrow to detect it.'):''}
+  $('#boxhint').textContent=!on&&busy?'Detecting …':''}
 function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i).catch(e=>log("Error: "+errText(e))),500)}
 // What a box's text was read from. A box whose area changes (moved, widened, made taller or shorter) reads the text under
 // its new area, otherwise it would keep the old text and translation while covering something else. Kept per page by block
@@ -389,6 +391,11 @@ $('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;
     setConn(r.warning?"warn":"ok","✓ "+r.message+(r.warning?" ⚠ "+r.warning:""))}catch(e){setConn("bad","✗ "+e)}$('#test').disabled=false};
 $('#url').addEventListener('input',()=>setConn("","Not tested"));
 $('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
+(function(){const t=$('#mdirHelp'),box=$('#mdirHelpBox'),wrap=t.parentElement;
+  const show=()=>{const r=t.getBoundingClientRect(),w=box.offsetWidth||260;
+    box.style.top=(r.bottom+6)+'px';box.style.left=Math.max(8,Math.min(r.right-w,window.innerWidth-w-8))+'px';box.hidden=false},hide=()=>box.hidden=true;
+  wrap.addEventListener('mouseenter',show);wrap.addEventListener('mouseleave',hide);
+  t.addEventListener('focus',show);t.addEventListener('blur',hide);t.addEventListener('click',show)})();
 $('#prev').onclick=()=>go(cur-1);$('#next').onclick=()=>go(cur+1);
 $$('.view button').forEach(b=>b.onclick=()=>setView(b.dataset.v));
 T.webview.getCurrentWebview().onDragDropEvent(e=>{const d=e.payload;$('#drop').classList.toggle('on',d.type==='over'||d.type==='enter');if(d.type==='drop'&&d.paths[0]){if(busy)log(busyMsg());else setDoc(d.paths[0])}});
