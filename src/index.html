@@ -8,15 +8,14 @@
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;overflow-x:auto}
 header{padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
 h1{font-size:17px;margin:0}header span{color:var(--mute);font-size:13px}
 /* three panes, each as tall as the window; a pane scrolls on its own when its content is taller */
-main{flex:1;min-height:0;display:grid;grid-template-columns:290px minmax(0,1fr) 320px;grid-template-rows:minmax(0,1fr);gap:14px;padding:14px;align-items:stretch}
+main{flex:1;min-height:0;display:grid;grid-template-columns:290px minmax(0,1fr) 320px;grid-template-rows:minmax(0,1fr);gap:14px;padding:14px;align-items:stretch;min-width:1000px}
 section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;min-height:0;overflow:auto}
 section.mid{display:flex;flex-direction:column;overflow:hidden}
 section.run{display:flex;flex-direction:column}
-@media(max-width:1000px){html,body{height:auto}body{display:block}main{display:block}section{margin-bottom:14px;overflow:visible}section.mid{display:block}.stage{height:70vh;flex:none}}
 h2{font-size:14px;margin:0 0 10px}
 label{display:block;font-size:12px;color:var(--mute);margin:10px 0 3px}
 select,input,textarea,button{font:inherit;color:inherit}
@@ -263,7 +262,7 @@ function applyZoom(redraw=true){const st=$('#stage');if(st.hidden||!st.clientWid
 function setZoom(z){const st=$('#stage'),fx=(st.scrollLeft+st.clientWidth/2)/st.scrollWidth,fy=(st.scrollTop+st.clientHeight/2)/st.scrollHeight;
   zoom=Math.min(8,Math.max(.25,z));applyZoom();st.scrollLeft=fx*st.scrollWidth-st.clientWidth/2;st.scrollTop=fy*st.scrollHeight-st.clientHeight/2}
 $('#zin').onclick=()=>setZoom(zoom*1.25);$('#zout').onclick=()=>setZoom(zoom/1.25);$('#zfit').onclick=()=>setZoom(1);
-new ResizeObserver(()=>applyZoom()).observe($('#stage'));
+let zoomRaf=0;new ResizeObserver(()=>{if(zoomRaf)return;zoomRaf=requestAnimationFrame(()=>{zoomRaf=0;applyZoom()})}).observe($('#stage'));
 // Box colour from the OCR confidence: red (nothing read / unsure) -> orange -> yellow -> green (sure). Scores of 0.5 and
 // below are fully red because OCR scores are mostly above 0.9. Lines from a PDF text layer have confidence 1 (green).
 const CONF_FLOOR=0.5;
