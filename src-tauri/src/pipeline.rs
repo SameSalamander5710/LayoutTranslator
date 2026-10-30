@@ -897,9 +897,10 @@ pub fn fit_px(f: &FontArc, text: &str, w: u32, h: u32) -> f32 {
 pub fn render(img: &Path, font_path: &Path, blocks: &[Block]) -> Result<image::RgbaImage, String> {
     let mut im = load_oriented(img)?.to_rgba8();
     let font = FontArc::try_from_vec(std::fs::read(font_path).map_err(|e| format!("Font missing ({}): {e}", font_path.display()))?).map_err(|e| e.to_string())?;
-    // Pass 1: erase every original text area. All patches are computed from the untouched page (in parallel, one block
-    // per task) and then applied in block order, so an erase can never wipe translated text of an overlapping block.
-    let patches: Vec<Patch> = blocks.par_iter().filter_map(|b| erase_patch(&im, b)).collect();
+    // Pass 1: erase every original text area. Blocks that overlap are erased together as one group (see `erase_groups`), so
+    // the blurred fill has no seam where they meet. All patches are computed from the untouched page (in parallel, one group
+    // per task) and applied afterwards, so an erase can never wipe translated text of an overlapping block.
+    let patches = erase_patches(&im, blocks);
     for p in &patches { p.apply(&mut im); }
     // Pass 2: lay out the translated text of every block (in parallel; this is where the font size is searched), then draw
     // only the glyphs (no box, no background), so overlapping boxes stay readable.
@@ -949,9 +950,14 @@ pub fn png_data_url(im: &DynamicImage) -> Result<String, String> {
 /// differ from 60 by at most a few grey levels (see `fewer_passes_look_the_same`) and are three times faster.
 const RELAX_PASSES: usize = 20;
 
-/// When more than this share of a block's crop looks like text, the stroke mask cannot be trusted (photo, pattern, two
-/// backgrounds side by side). The crop is then rebuilt as a blurred fill from the pixels around it (`frosted_patch`).
-const FROST_COVER: f32 = 0.45;
+/// When more than this share of a block's crop differs clearly from the page colour behind it, the stroke mask cannot be
+/// trusted (a noisy photo, a pattern). The crop is then rebuilt as a blurred fill from the pixels around it (`frosted_fill`).
+/// Plain text covers 20 to 35% of its box, big bold lettering up to about 50%.
+const FROST_COVER: f32 = 0.6;
+/// When the text mask (after growing it by 2 px) covers more than this share of a block's crop, the diffusion fill cannot
+/// reach the middle of the holes in `RELAX_PASSES` steps. The fill is then done by `push_pull` over the real pixels around
+/// the strokes (inside the box and outside it). This fill is not blurred, so the page keeps its detail between the letters.
+const DENSE_COVER: f32 = 0.5;
 /// How fast `push_pull` trusts a coarse cell that is only partly known. 1.0 is the textbook value; higher keeps colours
 /// from two different backgrounds apart for longer instead of averaging them to grey.
 const PULL_TRUST: f32 = 4.0;
@@ -1005,26 +1011,43 @@ fn background_plane(im: &image::RgbaImage, x0: u32, y0: u32, cw: usize, ch: usiz
     out
 }
 
+/// How far past its box the erase of a block may reach. Two blocks whose reach overlaps are erased together.
+const ERASE_PAD: i32 = 3;
+
 /// Works out how to erase one block, reading the page but not changing it, so many blocks can be done at the same time.
+#[cfg(test)]
 fn erase_patch(im: &image::RgbaImage, b: &Block) -> Option<Patch> { erase_patch_with(im, b, RELAX_PASSES) }
 
-fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<Patch> {
+#[cfg(test)]
+fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<Patch> { erase_group_with(im, &[b], &[], passes) }
+
+/// What the erase has learnt about one block: its crop of the page, which pixels of the crop look like text, and whether
+/// the crop is too busy for stroke inpainting (`frosty`: it gets the blurred fill instead).
+struct Crop { x0: i32, y0: i32, cw: usize, ch: usize, bgs: Vec<[f32; 3]>, md: Vec<bool>, frosty: bool, dense: bool, bg: [u8; 3] }
+
+fn analyse_crop(im: &image::RgbaImage, b: &Block) -> Option<Crop> {
     let (iw, ih) = im.dimensions();
     let [x, y, w, h] = b.bbox;
-    let p = 3i32;
+    let p = ERASE_PAD;
     let x0 = (x as i32 - p).max(0); let y0 = (y as i32 - p).max(0);
     let x1 = ((x + w) as i32 + p).min(iw as i32 - 1); let y1 = ((y + h) as i32 + p).min(ih as i32 - 1);
     if x1 <= x0 || y1 <= y0 { return None; }
     let (cw, ch) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
-    let px = |i: usize, j: usize| (x0 as u32 + i as u32, y0 as u32 + j as u32);
-    let bgs = background_plane(im, x0 as u32, y0 as u32, cw, ch, b.bg);
+    // The page colour behind every pixel of the crop: the median of a window around it, so it follows gradients, photos and
+    // stripes of several colours (a single tilted plane cannot describe those, and would call half the stripes "text").
+    let get = |a: u32, c: u32| { let q = im.get_pixel(a, c); [q[0], q[1], q[2]] };
+    let contrast: i32 = (0..3).map(|k| (b.fg[k] as i32 - b.bg[k] as i32).abs()).sum();
+    // With a clear text colour, pixels of that colour stay out of the median: heavy lettering (stems wider than half of the
+    // window, a solid bar) would otherwise become the "page colour" and stop looking like text.
+    let skip = if contrast >= 120 { Some((b.fg, 60)) } else { None };
+    let page = PageColours::new(iw, ih, &get, x0 as u32, y0 as u32, x1 as u32, y1 as u32, h, skip);
+    let bgs: Vec<[f32; 3]> = (0..cw * ch).map(|k| { let c = page.at(x0 + (k % cw) as i32, y0 + (k / cw) as i32); [c[0] as f32, c[1] as f32, c[2] as f32] }).collect();
     // A pixel belongs to the text if it differs from the background behind it by more than a share of the text contrast.
     // Dark text on a light page gives the old fixed limit of 60; faint text gets a lower limit, but never below 24 (noise).
-    let contrast: i32 = (0..3).map(|k| (b.fg[k] as i32 - b.bg[k] as i32).abs()).sum();
     let limit = (contrast / 4).clamp(24, 60);
     let mut m = vec![false; cw * ch];
     for j in 0..ch { for i in 0..cw {
-        let (a, c) = px(i, j); let q = im.get_pixel(a, c); let g = bgs[j * cw + i];
+        let q = im.get_pixel(x0 as u32 + i as u32, y0 as u32 + j as u32); let g = bgs[j * cw + i];
         m[j * cw + i] = (0..3).map(|k| (q[k] as f32 - g[k]).abs()).sum::<f32>() > limit as f32;
     } }
     let mut md = m.clone(); // dilate by 2 px to swallow anti-aliased edges
@@ -1034,57 +1057,125 @@ fn erase_patch_with(im: &image::RgbaImage, b: &Block, passes: usize) -> Option<P
             if a >= 0 && c >= 0 && (a as usize) < cw && (c as usize) < ch { md[c as usize * cw + a as usize] = true; }
         } }
     } } }
-    let to_px = |k: usize, v: [f32; 3]| { let (a, c) = px(k % cw, k / cw); (a, c, [v[0].round() as u8, v[1].round() as u8, v[2].round() as u8]) };
-    let cover = md.iter().filter(|v| **v).count() as f32 / (cw * ch) as f32;
-    // Too much is marked as text (a photo, a pattern, two backgrounds): stroke inpainting would only smear it. Rebuild the
-    // whole crop as a blurred fill of the colours around it. Only if that is impossible, paint the flat background plane.
-    if cover > FROST_COVER {
-        if let Some(p) = frosted_patch(im, b.bg, x0, y0, x1, y1) { return Some(p); }
-        return Some(Patch((0..cw * ch).map(|k| to_px(k, bgs[k])).collect()));
-    }
-    let mut buf: Vec<[f32; 3]> = (0..cw * ch).map(|k| {
-        if md[k] { bgs[k] } else { let (a, c) = px(k % cw, k / cw); let q = im.get_pixel(a, c); [q[0] as f32, q[1] as f32, q[2] as f32] }
-    }).collect();
-    for _ in 0..passes { for j in 0..ch { for i in 0..cw { if md[j * cw + i] {
-        let n = [(i.saturating_sub(1), j), ((i + 1).min(cw - 1), j), (i, j.saturating_sub(1)), (i, (j + 1).min(ch - 1))];
-        for k in 0..3 { buf[j * cw + i][k] = n.iter().map(|(a, c)| buf[c * cw + a][k]).sum::<f32>() / 4.0; }
-    } } } }
-    Some(Patch((0..cw * ch).filter(|&k| md[k]).map(|k| to_px(k, buf[k])).collect()))
+    // Too much is marked as text (a photo, a pattern, two backgrounds): stroke inpainting would only smear it. This is judged
+    // on the raw mask: the dilated one covers most of any dense line of small text, even on a flat page.
+    let share = |v: &[bool]| v.iter().filter(|x| **x).count() as f32 / (cw * ch) as f32;
+    Some(Crop { x0, y0, cw, ch, bgs, frosty: share(&m) > FROST_COVER, dense: share(&md) > DENSE_COVER, md, bg: b.bg })
 }
 
-/// Blurred replacement for the crop `x0..=x1, y0..=y1`: the crop is rebuilt only from the pixels around it (so no text
-/// can leak back in), and then softened. Colours from different backgrounds on both sides of the text run into each other.
-fn frosted_patch(im: &image::RgbaImage, bg: [u8; 3], x0: i32, y0: i32, x1: i32, y1: i32) -> Option<Patch> {
-    let (iw, ih) = im.dimensions();
-    let ctx = ((y1 - y0) / 2).clamp(8, 40); // how much surrounding page the fill may look at
-    let (gx0, gy0) = ((x0 - ctx).max(0), (y0 - ctx).max(0));
-    let (gx1, gy1) = ((x1 + ctx).min(iw as i32 - 1), (y1 + ctx).min(ih as i32 - 1));
+/// Groups the blocks of a page for erasing. Two blocks are in one group when their crops overlap or touch (directly or
+/// through a chain of blocks). Each group is erased in one go: erased one after the other, the blurred fill of the first
+/// block would be pasted over by the fill of the second, and the seam between the two would show.
+/// Returns indices into `blocks`, in the order of each group's first block.
+fn erase_groups(blocks: &[Block]) -> Vec<Vec<usize>> {
+    let pad = ERASE_PAD as f32;
+    let r: Vec<[f32; 4]> = blocks.iter().map(|b| [b.bbox[0] - pad, b.bbox[1] - pad, b.bbox[0] + b.bbox[2] + pad, b.bbox[1] + b.bbox[3] + pad]).collect();
+    let mut root: Vec<usize> = (0..blocks.len()).collect();
+    fn find(root: &mut [usize], mut i: usize) -> usize { while root[i] != i { root[i] = root[root[i]]; i = root[i]; } i }
+    for i in 0..blocks.len() { for j in i + 1..blocks.len() {
+        if r[i][0] < r[j][2] && r[j][0] < r[i][2] && r[i][1] < r[j][3] && r[j][1] < r[i][3] {
+            let (a, b) = (find(&mut root, i), find(&mut root, j));
+            if a != b { root[a.max(b)] = a.min(b); }
+        }
+    } }
+    let mut out: Vec<Vec<usize>> = vec![];
+    let mut slot: HashMap<usize, usize> = HashMap::new();
+    for i in 0..blocks.len() {
+        let k = find(&mut root, i);
+        let n = *slot.entry(k).or_insert_with(|| { out.push(vec![]); out.len() - 1 });
+        out[n].push(i);
+    }
+    out
+}
+
+/// The erase patches of a whole page, one per group of overlapping blocks (see `erase_groups`), computed in parallel from
+/// the untouched page. Groups never overlap, so the patches can be applied in any order.
+fn erase_patches(im: &image::RgbaImage, blocks: &[Block]) -> Vec<Patch> {
+    erase_groups(blocks).par_iter().filter_map(|g| {
+        let members: Vec<&Block> = g.iter().map(|&i| &blocks[i]).collect();
+        // Boxes of the other blocks hold other text: the blurred fill must not take its colours from there.
+        let others: Vec<[f32; 4]> = blocks.iter().enumerate().filter(|(i, _)| !g.contains(i)).map(|(_, b)| b.bbox).collect();
+        erase_group_with(im, &members, &others, RELAX_PASSES)
+    }).collect()
+}
+
+/// Erases a group of blocks with one fill. The hole is everything the blocks need replaced (the stroke pixels of a plain
+/// block, the whole crop of a busy one), and it is filled once, so there is no seam where the blocks overlap.
+/// `others` are the boxes of blocks outside the group (their pixels are never used as source colours).
+fn erase_group_with(im: &image::RgbaImage, blocks: &[&Block], others: &[[f32; 4]], passes: usize) -> Option<Patch> {
+    let crops: Vec<Crop> = blocks.iter().filter_map(|b| analyse_crop(im, b)).collect();
+    if crops.is_empty() { return None; }
+    let gx0 = crops.iter().map(|c| c.x0).min()?; let gy0 = crops.iter().map(|c| c.y0).min()?;
+    let gx1 = crops.iter().map(|c| c.x0 + c.cw as i32 - 1).max()?; let gy1 = crops.iter().map(|c| c.y0 + c.ch as i32 - 1).max()?;
     let (gw, gh) = ((gx1 - gx0 + 1) as usize, (gy1 - gy0 + 1) as usize);
-    let mut rgb = Vec::with_capacity(gw * gh);
-    let mut known = Vec::with_capacity(gw * gh);
-    for j in 0..gh { for i in 0..gw {
-        let (a, c) = (gx0 + i as i32, gy0 + j as i32);
+    let at = |k: usize| im.get_pixel(gx0 as u32 + (k % gw) as u32, gy0 as u32 + (k / gw) as u32);
+    let to_px = |k: usize, v: [f32; 3]| (gx0 as u32 + (k % gw) as u32, gy0 as u32 + (k / gw) as u32, [v[0].round().clamp(0., 255.) as u8, v[1].round().clamp(0., 255.) as u8, v[2].round().clamp(0., 255.) as u8]);
+    let (mut hole, mut frost) = (vec![false; gw * gh], vec![false; gw * gh]);
+    let mut plane = vec![[0f32; 3]; gw * gh]; // the background plane of the first crop that covers a pixel
+    let mut seen = vec![false; gw * gh];
+    for c in &crops { for j in 0..c.ch { for i in 0..c.cw {
+        let k = (c.y0 - gy0) as usize * gw + (c.x0 - gx0) as usize + j * gw + i;
+        if !seen[k] { seen[k] = true; plane[k] = c.bgs[j * c.cw + i]; }
+        if c.frosty { hole[k] = true; frost[k] = true; } else if c.md[j * c.cw + i] { hole[k] = true; }
+    } } }
+    if crops.iter().any(|c| c.frosty || c.dense) {
+        // At least one busy or dense block: the group's whole hole comes from one pyramid fill (blurred for the busy
+        // blocks). If nothing around it can be used, paint the smooth background.
+        let vals = frosted_fill(im, (gx0, gy0, gx1, gy1), &hole, &frost, others, crops[0].bg);
+        return Some(Patch((0..gw * gh).filter(|&k| hole[k]).map(|k| to_px(k, vals.as_ref().map_or(plane[k], |v| v[k]))).collect()));
+    }
+    let mut buf: Vec<[f32; 3]> = (0..gw * gh).map(|k| if hole[k] { plane[k] } else { let q = at(k); [q[0] as f32, q[1] as f32, q[2] as f32] }).collect();
+    for _ in 0..passes { for j in 0..gh { for i in 0..gw { if hole[j * gw + i] {
+        let n = [(i.saturating_sub(1), j), ((i + 1).min(gw - 1), j), (i, j.saturating_sub(1)), (i, (j + 1).min(gh - 1))];
+        for k in 0..3 { buf[j * gw + i][k] = n.iter().map(|(a, c)| buf[c * gw + a][k]).sum::<f32>() / 4.0; }
+    } } } }
+    Some(Patch((0..gw * gh).filter(|&k| hole[k]).map(|k| to_px(k, buf[k])).collect()))
+}
+
+/// The blurred ("frosted glass") fill for the group grid `g = (x0, y0, x1, y1)`. `hole` marks the pixels to replace and
+/// `frost` those of them that also get the blur (the others are thin strokes of plain blocks: they only need filling).
+/// The fill is rebuilt only from the pixels around the hole (so no text can leak back in), minus the boxes in `others`.
+/// Returns one colour per pixel of the group grid, or `None` when no pixel is left to copy colours from.
+fn frosted_fill(im: &image::RgbaImage, g: (i32, i32, i32, i32), hole: &[bool], frost: &[bool], others: &[[f32; 4]], bg: [u8; 3]) -> Option<Vec<[f32; 3]>> {
+    let (gx0, gy0, gx1, gy1) = g;
+    let (iw, ih) = im.dimensions();
+    let (gw, gh) = ((gx1 - gx0 + 1) as usize, (gy1 - gy0 + 1) as usize);
+    let ctx = ((gy1 - gy0) / 2).clamp(8, 40); // how much surrounding page the fill may look at
+    let (ex0, ey0) = ((gx0 - ctx).max(0), (gy0 - ctx).max(0));
+    let (ex1, ey1) = ((gx1 + ctx).min(iw as i32 - 1), (gy1 + ctx).min(ih as i32 - 1));
+    let (ew, eh) = ((ex1 - ex0 + 1) as usize, (ey1 - ey0 + 1) as usize);
+    let near: Vec<[f32; 4]> = others.iter().copied().filter(|o| o[0] <= ex1 as f32 && o[0] + o[2] >= ex0 as f32 && o[1] <= ey1 as f32 && o[1] + o[3] >= ey0 as f32).collect();
+    let mut rgb = Vec::with_capacity(ew * eh);
+    let mut known = Vec::with_capacity(ew * eh);
+    for j in 0..eh { for i in 0..ew {
+        let (a, c) = (ex0 + i as i32, ey0 + j as i32);
         let q = im.get_pixel(a as u32, c as u32);
         rgb.push([q[0] as f32, q[1] as f32, q[2] as f32]);
-        known.push(a < x0 || a > x1 || c < y0 || c > y1);
+        let in_hole = a >= gx0 && a <= gx1 && c >= gy0 && c <= gy1 && hole[(c - gy0) as usize * gw + (a - gx0) as usize];
+        let in_other = near.iter().any(|o| a as f32 >= o[0] && a as f32 <= o[0] + o[2] && c as f32 >= o[1] && c as f32 <= o[1] + o[3]);
+        known.push(!in_hole && !in_other);
     } }
     if !known.iter().any(|k| *k) { return None; }
     // Take the tilted background plane out first and fill only what is left (the residual). A flat or linear background
     // then comes back exactly, and the pyramid only has to carry the real detail: photo texture, a second background.
-    let plane = background_plane(im, gx0 as u32, gy0 as u32, gw, gh, bg);
-    let res: Vec<[f32; 3]> = (0..gw * gh).map(|k| [0, 1, 2].map(|c| rgb[k][c] - plane[k][c])).collect();
-    let mut g = push_pull(&res, &known, gw, gh);
-    for k in 0..gw * gh {
+    let plane = background_plane(im, ex0 as u32, ey0 as u32, ew, eh, bg);
+    let res: Vec<[f32; 3]> = (0..ew * eh).map(|k| [0, 1, 2].map(|c| rgb[k][c] - plane[k][c])).collect();
+    let mut filled = push_pull(&res, &known, ew, eh);
+    for k in 0..ew * eh {
         // real pixels around the hole stay real, so the edge is seamless
-        g[k] = if known[k] { rgb[k] } else { [0, 1, 2].map(|c| (g[k][c] + plane[k][c]).clamp(0.0, 255.0)) };
+        filled[k] = if known[k] { rgb[k] } else { [0, 1, 2].map(|c| (filled[k][c] + plane[k][c]).clamp(0.0, 255.0)) };
     }
-    let r = ((y1 - y0) / 6).clamp(2, 10) as usize;
-    for _ in 0..2 { box_blur(&mut g, gw, gh, r); } // two box blurs are close to a Gaussian
-    let px = (0..gw * gh).filter(|&k| !known[k]).map(|k| {
-        let v = g[k];
-        ((gx0 + (k % gw) as i32) as u32, (gy0 + (k / gw) as i32) as u32, [v[0].round().clamp(0., 255.) as u8, v[1].round().clamp(0., 255.) as u8, v[2].round().clamp(0., 255.) as u8])
-    }).collect();
-    Some(Patch(px))
+    let mut blurred = filled.clone();
+    let r = ((gy1 - gy0) / 6).clamp(2, 10) as usize;
+    for _ in 0..2 { box_blur(&mut blurred, ew, eh, r); } // two box blurs are close to a Gaussian
+    let mut out = vec![[0f32; 3]; gw * gh];
+    for j in 0..gh { for i in 0..gw {
+        let k = j * gw + i;
+        if !hole[k] { continue; }
+        let e = (gy0 - ey0) as usize * ew + (gx0 - ex0) as usize + j * ew + i;
+        out[k] = if frost[k] { blurred[e] } else { filled[e] };
+    } }
+    Some(out)
 }
 
 /// Fills the unknown pixels of a `w * h` colour grid from the known ones ("push-pull" / normalised convolution on an
@@ -1637,6 +1728,7 @@ mod tests {
         assert!(erase_patch(&page, &whole).is_some()); // nothing is known around the hole: must fall back, not panic
     }
 
+    // ---- text colour ----
     /// A grey page with a "flag" on it: black, red and yellow stripes. White vertical bars (each 6 px wide, 16 px apart) stand
     /// in for white lettering across the stripes, the case where the colour around the box says nothing about the text.
     fn striped_page(bars: [u8; 3]) -> RgbImage {
@@ -1674,6 +1766,61 @@ mod tests {
         assert!(text_colour(&im, 10.0, 10.0, 50.0, 30.0).is_none());
         let _ = box_colors(&im, 10.0, 10.0, 50.0, 30.0); // falls back to the old rule, no panic
         let _ = box_colors(&im, 90.0, 50.0, 80.0, 40.0); // box reaching past the page edge
+    }
+
+    // ---- erasing overlapping blocks as one ----
+    fn blk(id: u32, bbox: [f32; 4], bg: [u8; 3]) -> Block {
+        Block { id, bbox, text: String::new(), translated: None, conf: 1.0, font_px: 20.0, fg: [255; 3], bg }
+    }
+
+    #[test]
+    fn blocks_that_overlap_or_touch_are_one_group() {
+        let b = [blk(1, [10.0, 10.0, 100.0, 30.0], [0; 3]), blk(2, [60.0, 30.0, 100.0, 30.0], [0; 3]), blk(3, [10.0, 200.0, 50.0, 20.0], [0; 3]), blk(4, [159.0, 55.0, 40.0, 20.0], [0; 3])];
+        // 1 overlaps 2; 4 starts 1 px after the end of 2, inside the erase reach, so the chain 1-2-4 is one group; 3 is alone
+        assert_eq!(erase_groups(&b), vec![vec![0, 1, 3], vec![2]]);
+        assert_eq!(erase_groups(&[]), Vec::<Vec<usize>>::new());
+    }
+
+    /// The largest colour jump between two neighbouring pixels inside `r` (x, y, w, h).
+    fn max_step(im: &image::RgbaImage, r: [u32; 4]) -> i32 {
+        let mut m = 0;
+        for y in r[1]..r[1] + r[3] - 1 { for x in r[0]..r[0] + r[2] - 1 {
+            let (a, b, c) = (im.get_pixel(x, y), im.get_pixel(x + 1, y), im.get_pixel(x, y + 1));
+            for k in 0..3 { m = m.max((a[k] as i32 - b[k] as i32).abs()).max((a[k] as i32 - c[k] as i32).abs()); }
+        } }
+        m
+    }
+
+    #[test]
+    fn overlapping_busy_blocks_are_filled_without_a_seam() {
+        let truth = |x: u32| (128.0 + 100.0 * (x as f32 / 25.0).sin()) as u8;
+        let mut im = image::RgbaImage::new(420, 140);
+        for (x, _, p) in im.enumerate_pixels_mut() { let v = truth(x); *p = Rgba([v, 255 - v, 128, 255]); }
+        let blocks = vec![blk(1, [60.0, 30.0, 200.0, 40.0], [128; 3]), blk(2, [160.0, 50.0, 200.0, 40.0], [128; 3])];
+        let mut page = im.clone();
+        for b in &blocks { page = bar_on(page, b); }
+        let mut out = page.clone();
+        for p in erase_patches(&page, &blocks) { p.apply(&mut out); }
+        assert!(out.pixels().all(|p| p[0].min(p[1]).min(p[2]) < 200), "some of the text is left");
+        // the pattern itself changes by at most ~4 per pixel; a seam from pasting one fill over another is much larger
+        let step = max_step(&out, [165, 52, 90, 16]); // inside the part where the two blocks overlap
+        assert!(step <= 10, "a seam of {step} grey levels between neighbouring pixels");
+    }
+
+    #[test]
+    fn dense_lettering_keeps_the_stripes_it_was_written_on() {
+        let page = striped_page([255, 255, 255]);
+        let rgba = DynamicImage::ImageRgb8(page).to_rgba8();
+        let mut b = blk(1, [70.0, 55.0, 260.0, 95.0], [237; 3]);
+        (b.fg, b.bg) = box_colors(&striped_page([255, 255, 255]), 70.0, 55.0, 260.0, 95.0); // the colours the app would find
+        let mut out = rgba.clone();
+        for p in erase_patches(&rgba, std::slice::from_ref(&b)) { p.apply(&mut out); }
+        let near = |x: u32, y: u32, c: [i32; 3], tol: i32| { let p = out.get_pixel(x, y); (0..3).all(|k| (p[k] as i32 - c[k]).abs() <= tol) };
+        for x in (83..320).step_by(16) { // the middle of every former bar
+            assert!(near(x, 64, [0, 0, 0], 90), "black stripe lost at {x}: {:?}", out.get_pixel(x, 64));
+            assert!(near(x, 100, [220, 0, 0], 90), "red stripe lost at {x}: {:?}", out.get_pixel(x, 100));
+            assert!(near(x, 135, [250, 205, 0], 90), "yellow stripe lost at {x}: {:?}", out.get_pixel(x, 135));
+        }
     }
 
     #[test]

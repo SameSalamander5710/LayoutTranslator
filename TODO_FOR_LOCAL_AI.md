@@ -35,7 +35,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [x] E1. Classical diffusion fill implemented; needs fixture testing.
 - [x] E2. The stroke threshold follows the text contrast (24 to 60 instead of a fixed 60), and the background colour is a tilted plane fitted to the non-text pixels, so gradients work. When too much looks like text (over 45%), the box is painted with that smooth background instead of a flat colour.
 - [ ] E3. Optional: replace it with a LaMa ONNX model through `ort` for photos and textures. Keep the classical fill as the fallback.
-- [x] E4. When over 45% of a box looks like text (photo, pattern, two backgrounds), the box is no longer painted with one flat colour. It is rebuilt from the pixels around it (push-pull pyramid fill on the residual of the background plane, then a light blur), so the area looks like frosted glass. See `frosted_patch`, `FROST_COVER`, `PULL_TRUST`. Tune `FROST_COVER` on real pages.
+- [x] E4. When more than 60% of a box differs clearly from the page colour behind it (a noisy photo, a pattern), the box is not painted with one flat colour. It is rebuilt from the pixels around it (push-pull pyramid fill on the residual of the background plane, then a light blur), so the area looks like frosted glass. See `frosted_fill`, `FROST_COVER`, `PULL_TRUST`. Tune `FROST_COVER` on real pages.
 
 ## F. Quality
 - [x] F1a. `wrap()` follows the Unicode line breaking rules (CJK breaks, no closing punctuation at a line start); overlong words are cut between grapheme clusters.
@@ -68,3 +68,4 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 
 ## K. Editing, erase and colour
 - [x] K1. Text colour (`text_colour`): every pixel is compared with the page colour right behind it (median of a window, `PageColours`) instead of the ring around the box, and the commonest colour among the clearest text pixels is taken. White lettering on a red stripe used to come out red. The old ring rule stays as the fallback.
+- [x] K2. Blocks whose crops overlap or touch are erased as one group (`erase_groups`, `erase_group_with`) with one fill, so a blurred fill is never pasted over another one. Other blocks' boxes are never used as source colours. The text mask follows the page colour behind each pixel (text-coloured pixels are left out of the median), the busy test uses the raw mask (`FROST_COVER` 0.6), and dense masks (`DENSE_COVER` 0.5) use the unblurred push-pull fill. Before, the dilated mask made nearly every text line count as busy.
