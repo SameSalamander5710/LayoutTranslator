@@ -65,3 +65,6 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [x] J2. One shared HTTP client, no timeout (use the Stop button for a stuck server).
 - [x] J3. `fit_px` stops at 0.25 px and uses a glyph cache; `erase` uses 20 passes; erase and layout run in parallel (rayon).
 - [x] J4. Box colour follows OCR confidence (red, orange, yellow, green); Compare view with a divider.
+
+## K. Editing, erase and colour
+- [x] K1. Text colour (`text_colour`): every pixel is compared with the page colour right behind it (median of a window, `PageColours`) instead of the ring around the box, and the commonest colour among the clearest text pixels is taken. White lettering on a red stripe used to come out red. The old ring rule stays as the fallback.
