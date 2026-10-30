@@ -44,9 +44,9 @@ details.opts summary{cursor:pointer;font-size:13px}details.opts summary .st{marg
 .chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink);margin-top:10px}.chk input{width:auto}
 .hint{color:var(--mute)}textarea{resize:vertical;font:inherit}
 .blk.sel{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}.blk textarea.src{color:var(--mute)}
-button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0;flex:1;min-width:150px}
+button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0}
 button.ib{display:inline-flex;align-items:center;justify-content:center;padding:5px 8px}button.ib svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.vsep{width:1px;align-self:stretch;background:var(--line);margin:0 2px}
+button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.vsep{width:1px;align-self:stretch;background:var(--line);margin:0 2px}#boxbar{display:inline-flex;align-items:stretch;gap:8px}
 .blk{border-bottom:1px solid var(--line);padding:8px 0}
 .blk small{color:var(--mute);display:block}
 .blk textarea{margin-top:4px;resize:vertical;min-height:38px}
@@ -60,7 +60,7 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
 .st{font-size:12px;color:var(--mute);align-self:center}.st.warn{color:#b26a00}.st.ok{color:var(--ok)}.st.bad{color:#b3261e}
 </style></head>
 <body>
-<header><h1>Layout Translator</h1><span>Local OCR (PaddleOCR) + any OpenAI-compatible endpoint, e.g. llama.cpp</span></header>
+<header><h1>Layout Translator</h1><span>Local OCR (PaddleOCR) + any OpenAI-compatible endpoint</span></header>
 <main>
 <section aria-label="Controls">
   <h2>1. Input</h2>
@@ -69,7 +69,7 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
   <label for="mode">Text detection</label>
   <select id="mode">
     <option value="hybrid">Automatic: selectable text + OCR</option>
-    <option value="ocr">OCR only (read everything as an image)</option>
+    <option value="ocr">OCR only</option>
     <option value="text">Selectable PDF text only</option>
   </select>
   <p class="note" id="modeNote"></p>
@@ -81,7 +81,7 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
   <h2 style="margin-top:18px">2. Translation endpoint</h2>
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
   <div class="row" style="margin-top:6px"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
-  <div class="row" style="margin-top:8px;align-items:center"><label for="par" style="margin:0">Parallel requests</label><input id="par" type="number" min="1" max="16" value="1" style="width:64px"><span class="hint" style="font-size:12px">llama-server <code>-np</code></span></div>
+  <div class="row" style="margin-top:8px;align-items:center"><label for="par" style="margin:0">Parallel requests</label><input id="par" type="number" min="1" max="16" value="1" style="width:64px"></div>
   <label for="tgt">Translate into</label><div class="combo"><input id="tgt" value="English" role="combobox" aria-expanded="false" aria-controls="tgtList" aria-autocomplete="list" autocomplete="off" spellcheck="false"><button type="button" id="tgtBtn" class="cbtn" aria-label="Show languages" tabindex="-1">▾</button><ul id="tgtList" class="clist" role="listbox" aria-label="Languages" hidden></ul></div>
   <details class="opts" id="opts">
     <summary>Translation options <span id="optsInfo" class="st"></span></summary>
@@ -104,9 +104,7 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
     <button data-v="blocks" aria-pressed="false">Text blocks</button>
   </div>
   <div class="bar"><button id="prev" aria-label="Previous page">◀</button><span id="pn">–</span><button id="next" aria-label="Next page">▶</button>
-    <span class="sp"></span>
-    <span class="zc" id="zoomctl" role="group" aria-label="Zoom"><button id="zout" aria-label="Zoom out">−</button><span id="zl" aria-live="polite">100%</span><button id="zin" aria-label="Zoom in">+</button><button id="zfit" aria-label="Fit page to the pane">Fit</button></span></div>
-  <div class="bar" id="boxbar" hidden>
+    <span id="boxbar" hidden><span class="vsep" aria-hidden="true"></span>
     <button id="addbox" class="ib" aria-label="Add box" title="Add a box"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
     <button id="delbox" class="ib" aria-label="Delete box" title="Delete the selected box (Delete)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button>
     <span class="vsep" aria-hidden="true"></span>
@@ -114,7 +112,9 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
     <button id="redo" class="ib" aria-label="Redo" title="Redo (Ctrl+Y)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h4"/></svg></button>
     <span class="vsep" aria-hidden="true"></span>
     <button id="reset" class="ib" aria-label="Reset detection" title="Reset detection: drop all changes to the boxes and detect this page again (Undo brings them back)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v5h-5"/></svg></button>
-    <span class="note" id="boxhint"></span></div>
+    <span class="note" id="boxhint"></span></span>
+    <span class="sp"></span>
+    <span class="zc" id="zoomctl" role="group" aria-label="Zoom"><button id="zout" aria-label="Zoom out">−</button><span id="zl" aria-live="polite">100%</span><button id="zin" aria-label="Zoom in">+</button><button id="zfit" aria-label="Fit page to the pane">Fit</button></span></div>
   <div class="stage" id="stage"><canvas id="cv" width="620" height="760"></canvas></div>
   <div id="blocksView" hidden><p class="note" style="margin-top:0">Edit any translation here; the page re-renders.</p><div id="blocks"><p class="note">Run the pipeline to see detected blocks.</p></div></div>
 </section>
@@ -190,7 +190,7 @@ function stepHist(dir){if(busy||view!=='boxes')return;const p=P(),h=hist(p),from
 function syncBoxUi(){const p=P(),on=!!p.ocr,h=p.hist||{past:[],future:[]};
   $('#addbox').disabled=!on||busy;$('#addbox').classList.toggle('on',adding);$('#addbox').title=adding?'Cancel adding a box (Esc)':'Add a box';
   $('#delbox').disabled=sel==null||busy;$('#undo').disabled=!h.past.length||busy;$('#redo').disabled=!h.future.length||busy;$('#reset').disabled=!pg.length||busy;
-  $('#boxhint').textContent=!on?(busy?'Detecting …':'This page has no detection yet. Use the circular arrow to detect it.'):adding?'Drag on the page to draw the new box.':'Click a box to select it. Drag to move, drag a handle to resize, Delete removes it. A box that covers a different area reads the text under it.'}
+  $('#boxhint').textContent=!on?(busy?'Detecting …':'This page has no detection yet. Use the circular arrow to detect it.'):''}
 function retypeset(i){const p=pg[i];if(!p||!p.out)return;clearTimeout(timer);timer=setTimeout(()=>typeset(i).catch(e=>log("Error: "+errText(e))),500)}
 // What a box's text was read from. A box whose area changes (moved, widened, made taller or shorter) reads the text under
 // its new area, otherwise it would keep the old text and translation while covering something else. Kept per page by block
@@ -293,7 +293,7 @@ function list(){const box=$('#blocks'),bl=P().blocks;box.innerHTML=bl.length?"":
       t.oninput=()=>{b.translated=t.value;clearTimeout(timer);const i=cur;timer=setTimeout(async()=>{try{await typeset(i);if(i===cur&&view!=='blocks')setView('out')}catch(e){log("Error: "+errText(e))}},400)};d.appendChild(t)}
     const rb=document.createElement('button');rb.className="sm";rb.textContent=b.translated!=null?'Retranslate':'Translate';rb.disabled=busy;rb.onclick=()=>retranslate(b.id);d.appendChild(rb);
     d.addEventListener('click',()=>{sel=b.id;$$('.blk').forEach(x=>x.classList.toggle('sel',x===d))});box.appendChild(d)})}
-const MODES={hybrid:"PDFs: selectable text is used directly, OCR reads only what is left (images, scans). Images: OCR.",
+const MODES={hybrid:"",
   ocr:"Everything is read with OCR, even if the PDF has selectable text.",
   text:"Only selectable PDF text is translated. Text inside images or scans is ignored, and no OCR runs."};
 function applyMode(){const m=$('#mode').value;$('#modeNote').textContent=MODES[m]||"";$('#lang').disabled=m==="text"}
