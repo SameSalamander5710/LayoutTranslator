@@ -25,6 +25,7 @@ unicode-linebreak = "0.1"  # where a line may break (Japanese, Chinese, ...)
 unicode-segmentation = "1" # grapheme clusters, for cutting a word that is wider than the box
 rayon = "1.12"            # erases and lays out the blocks of a page on all CPU cores
 pdfium-render = "0.8"   # binds to a pdfium library shipped in resources/pdfium
+arboard = { version = "3.7", default-features = false, features = ["image-data"] } # reads the image on the clipboard for the paste button and Ctrl+V (MIT OR Apache-2.0)
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] } # async tests and a small mock server (MIT)

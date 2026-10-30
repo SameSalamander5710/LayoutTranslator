@@ -8,7 +8,7 @@ use oar_ocr::oarocr::OAROCR;
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -1356,6 +1356,24 @@ pub fn save_png(im: &image::RgbaImage, path: &Path) -> Result<(), String> {
     write_atomic(path, &buf.into_inner())
 }
 
+/// Saves an image taken from the clipboard (straight RGBA, `width * height * 4` bytes) as a new PNG in `dir` and returns its
+/// path. Transparent areas are flattened onto white, because the page is read as plain RGB afterwards.
+pub fn save_clipboard_png(width: usize, height: usize, rgba: &[u8], dir: &Path) -> Result<PathBuf, String> {
+    let bad = || "The clipboard image is empty or damaged".to_string();
+    if width == 0 || height == 0 || rgba.len() != width * height * 4 { return Err(bad()); }
+    let mut im = image::RgbaImage::from_raw(width as u32, height as u32, rgba.to_vec()).ok_or_else(bad)?;
+    for p in im.pixels_mut() {
+        let a = p[3] as u32;
+        for c in 0..3 { p[c] = ((p[c] as u32 * a + 255 * (255 - a)) / 255) as u8; }
+        p[3] = 255;
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let path = dir.join(format!("pasted-{stamp}.png"));
+    save_png(&im, &path)?;
+    Ok(path)
+}
+
 /// One finished page for the PDF writer. It keeps only the JPEG (about 0.3 to 1 MB) instead of the decoded image (about
 /// 15 MB for an A4 page at 200 DPI), so a long document can be exported one page at a time with little memory.
 pub struct JpegPage { pub w: u32, pub h: u32, pub dpi: f32, pub jpg: Vec<u8> }
@@ -1821,6 +1839,20 @@ mod tests {
             assert!(near(x, 100, [220, 0, 0], 90), "red stripe lost at {x}: {:?}", out.get_pixel(x, 100));
             assert!(near(x, 135, [250, 205, 0], 90), "yellow stripe lost at {x}: {:?}", out.get_pixel(x, 135));
         }
+    }
+
+    #[test]
+    fn a_clipboard_image_is_saved_as_png_on_white() {
+        let dir = temp_dir("clipboard");
+        let rgba = [255u8, 0, 0, 255, 0, 0, 255, 0]; // one opaque red pixel, one fully transparent blue pixel
+        let path = save_clipboard_png(2, 1, &rgba, &dir).unwrap();
+        let im = image::open(&path).unwrap().to_rgb8();
+        assert_eq!((im.width(), im.height()), (2, 1));
+        assert_eq!(im.get_pixel(0, 0).0, [255, 0, 0]);
+        assert_eq!(im.get_pixel(1, 0).0, [255, 255, 255]);
+        assert!(save_clipboard_png(2, 2, &rgba, &dir).is_err()); // the byte count does not match the size
+        assert!(save_clipboard_png(0, 0, &[], &dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

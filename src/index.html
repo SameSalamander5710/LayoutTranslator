@@ -64,8 +64,8 @@ button.ib.on{background:var(--acc);color:var(--accink);border-color:var(--acc)}.
 <main>
 <section aria-label="Controls">
   <h2>1. Input</h2>
-  <div class="drop" id="drop">Drop an image or PDF here<br><small>PNG, JPG, WebP, BMP, PDF</small></div>
-  <div class="row" style="margin-top:0"><button id="browse">Browse…</button></div>
+  <div class="drop" id="drop">Drop an image or PDF here<br><small>PNG, JPG, WebP, BMP, PDF<br>or paste an image with <b id="pk">Ctrl+V</b></small></div>
+  <div class="row" style="margin-top:0"><button id="browse">Browse…</button><button id="paste" class="ib" aria-label="Paste an image from the clipboard" title="Paste an image from the clipboard (Ctrl+V)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="12" height="16" rx="2"/><path d="M9 5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M9 12h6M9 16h4"/></svg></button></div>
   <label for="mode">Text detection</label>
   <select id="mode">
     <option value="hybrid">Automatic: selectable text + OCR</option>
@@ -140,7 +140,7 @@ let pg=[],cur=0,isPdf=false,view="orig",timer=null,sel=null,adding=false,drag=nu
 // replace the pages or the cancel token under a running task is refused (or disabled) while it is set.
 let busy=false,busyWhat="",saveReady=false;
 const busyMsg=()=>busyWhat==="run"?"Stop the run first.":"Please wait until the current task has finished.";
-function setBusy(on,what=""){busy=on;busyWhat=on?what:"";$('#browse').disabled=on;$('#mode').disabled=on;$$('button.sm').forEach(b=>b.disabled=on);
+function setBusy(on,what=""){busy=on;busyWhat=on?what:"";$('#browse').disabled=on;$('#paste').disabled=on;$('#mode').disabled=on;$$('button.sm').forEach(b=>b.disabled=on);
   $('#run').disabled=on||!pg.length;$('#save').disabled=on||!saveReady;syncBoxUi()}
 const setSave=v=>{saveReady=v;$('#save').disabled=!v||busy};
 const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
@@ -372,6 +372,15 @@ $('#save').onclick=async()=>{if(busy)return log(busyMsg());const pdf=isPdf;setBu
   try{const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
     pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,lang:fontLang()}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,lang:fontLang()});log("Saved "+o)}
   catch(e){log("Error: "+e)}finally{setBusy(false)}};
+// ---- Paste an image from the clipboard: the button, or Ctrl+V (Cmd+V on a Mac) anywhere outside a text field ----
+if(/Mac|iPhone|iPad/.test(navigator.platform)){$('#pk').textContent='⌘V';$('#paste').title='Paste an image from the clipboard (⌘V)'}
+let pasting=false;
+async function pasteImage(){if(pasting)return;if(busy)return log(busyMsg());pasting=true;
+  try{await setDoc(await inv('paste_image'))}catch(e){log("Paste: "+errText(e))}finally{pasting=false}}
+const typing=()=>/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)||document.activeElement.isContentEditable;
+$('#paste').onclick=pasteImage;
+document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='v'&&!typing()){e.preventDefault();pasteImage()}});
+document.addEventListener('paste',e=>{if(typing())return;e.preventDefault();pasteImage()}); // also catches the paste menu command
 $('#browse').onclick=async()=>{const p=await T.dialog.open({filters:[{name:"Images and PDF",extensions:["png","jpg","jpeg","webp","bmp","pdf"]}]});if(p)setDoc(p)};
 const setConn=(c,t)=>{const e=$('#conn');e.className="st "+c;e.textContent=t};
 $('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;

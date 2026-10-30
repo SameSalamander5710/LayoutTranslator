@@ -166,6 +166,22 @@ async fn open_document(app: AppHandle, path: String) -> Result<Vec<String>, Stri
     pipeline::rasterise_pdf(Path::new(&path), &lib, &out)
 }
 
+// Paste: the image on the clipboard (a screenshot, or an image copied from a browser or an editor) is saved as a PNG next to
+// the PDF page images in the app cache, and the UI opens it like any other image. Both the paste button and Ctrl+V use it.
+#[tauri::command]
+async fn paste_image(app: AppHandle) -> Result<String, String> {
+    let dir = pages_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let img = arboard::Clipboard::new().and_then(|mut c| c.get_image()).map_err(|e| match e {
+            arboard::Error::ContentNotAvailable => "There is no image on the clipboard. Copy an image or take a screenshot first, then paste again.".to_string(),
+            e => format!("The clipboard could not be read: {e}"),
+        })?;
+        pipeline::save_clipboard_png(img.width, img.height, &img.bytes, &dir).map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn preview(path: String) -> Result<String, String> {
     pipeline::png_data_url(&pipeline::load_oriented(Path::new(&path))?)
@@ -203,7 +219,7 @@ fn main() {
         .manage(EngineCache::default())
         .manage(pipeline::TranslationCache::default())
         .manage(RunControl::default())
-        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, cancel_run, read_region, sample_colors, test_connection, render_page, open_document, preview, export_pdf])
+        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, cancel_run, read_region, sample_colors, test_connection, render_page, open_document, paste_image, preview, export_pdf])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }
