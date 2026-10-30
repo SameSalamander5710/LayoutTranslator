@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Layout Translator – mockup</title>
+<title>Layout Translator</title>
 <style>
 :root{--bg:#e9edf1;--panel:#fff;--ink:#14212b;--mute:#5d6c78;--line:#cfd7de;--acc:#1f5f8b;--accink:#fff;--ok:#2b7a4b;color-scheme:light dark}
 @media(prefers-color-scheme:dark){:root{--bg:#10171d;--panel:#18222b;--ink:#e6edf2;--mute:#92a1ad;--line:#2b3945;--acc:#6ab0e0;--accink:#08202f;--ok:#6fcf97}}
@@ -132,7 +132,7 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
 </section>
 </main>
 <script>(function(){
-if(!window.__TAURI__){document.body.insertAdjacentHTML('afterbegin','<p role="alert" style="margin:0;padding:10px 20px;background:#b3261e;color:#fff">This page only works inside the Layout Translator desktop app (Tauri). To preview the interface in a browser or on a phone, open mockup/index.html instead.</p>');document.querySelectorAll('button,input,select').forEach(e=>e.disabled=true);return}
+if(!window.__TAURI__){document.body.insertAdjacentHTML('afterbegin','<p role="alert" style="margin:0;padding:10px 20px;background:#b3261e;color:#fff">This page only works inside the Layout Translator desktop app (Tauri).</p>');document.querySelectorAll('button,input,select').forEach(e=>e.disabled=true);return}
 
 const T=window.__TAURI__,inv=(c,a)=>T.core.invoke(c,a),$=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const cv=$('#cv'),cx=cv.getContext('2d');

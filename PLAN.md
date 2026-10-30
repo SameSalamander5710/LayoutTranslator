@@ -39,7 +39,7 @@ input file
                   export PNG / PDF
 ```
 
-**Data contract** (Rust `struct` with serde, same JSON the mockup uses):
+**Data contract** (Rust `struct` with serde, same JSON the UI uses):
 
 ```
 TextBlock { id, page, bbox:[x,y,w,h], text, translated?, conf, fontPx, weight, fg, bg, angle? }
@@ -72,7 +72,6 @@ Ship small default OCR models in the installer (tens of MB). Extra languages and
 ```
 ├─ package.json, README.md, PLAN.md, TODO_FOR_LOCAL_AI.md, AGENTS.md
 ├─ src/index.html              the real UI (needs Tauri)
-├─ mockup/index.html           standalone browser demo, no backend
 ├─ scripts/{fetch-models.mjs, models.json}   fonts, OCR models, PDFium
 ├─ src-tauri/
 │  ├─ Cargo.toml, tauri.conf.json, capabilities/default.json
@@ -102,7 +101,7 @@ Later, split `pipeline.rs` into modules (`ocr`, `translate`, `render`, `pdf`) wi
 
 - "DeepL quality" layout preservation is hard in general. Expect good results on flat documents, forms, slides, screenshots, signs; weaker on colourful backgrounds, curved or vertical text, dense tables, and mixed fonts.
 - Small LLMs sometimes drop, merge or reorder lines. The id-keyed JSON contract and per-block retry are there for this reason.
-- OCR errors propagate into translation. Show detected text next to the translation and let the user edit (the mockup already does).
+- OCR errors propagate into translation. Show detected text next to the translation and let the user edit (the UI already does).
 - CJK needs separate fonts and per-script OCR models; plan binary size accordingly.
 - Licensing: model weights keep their own licences. Keep a `THIRD_PARTY.md`, as RustLens does.
 
