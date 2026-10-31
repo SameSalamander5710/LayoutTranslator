@@ -60,6 +60,9 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
 .clist li{padding:5px 10px;cursor:pointer}.clist li.act{background:var(--acc);color:var(--accink)}.clist li[aria-selected=true]{font-weight:600}
 .clist li.sep{height:1px;margin:4px 8px;padding:0;background:var(--line);cursor:default}
 .st{font-size:12px;color:var(--mute);align-self:center}.st.warn{color:#b26a00}.st.ok{color:var(--ok)}.st.bad{color:#b3261e}
+/* small helpers. The security policy does not allow inline style attributes, so spacing is set with classes. Keep them last. */
+.mt0{margin-top:0}.mt6{margin-top:6px}.mt8{margin-top:8px}.mt18{margin-top:18px}.m0{margin:0}.aic{align-items:center}.w64{width:64px}
+.nodesk{margin:0;padding:10px 20px;background:#b3261e;color:#fff}
 </style></head>
 <body>
 <header><h1>Layout Translator</h1><span>Local OCR (PaddleOCR) + any OpenAI-compatible endpoint</span></header>
@@ -67,7 +70,7 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
 <section aria-label="Controls">
   <h2>1. Input</h2>
   <div class="drop" id="drop">Drop an image or PDF here<br><small>PNG, JPG, WebP, BMP, PDF<br>or paste an image with <b id="pk">Ctrl+V</b></small></div>
-  <div class="row" style="margin-top:0"><button id="browse">Browse…</button><button id="paste" class="ib" aria-label="Paste an image from the clipboard" title="Paste an image from the clipboard (Ctrl+V)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="12" height="16" rx="2"/><path d="M9 5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M9 12h6M9 16h4"/></svg></button></div>
+  <div class="row mt0"><button id="browse">Browse…</button><button id="paste" class="ib" aria-label="Paste an image from the clipboard" title="Paste an image from the clipboard (Ctrl+V)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="12" height="16" rx="2"/><path d="M9 5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M9 12h6M9 16h4"/></svg></button></div>
   <label for="mode">Text detection</label>
   <select id="mode">
     <option value="hybrid">Automatic: selectable text + OCR</option>
@@ -77,12 +80,12 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
   <p class="note" id="modeNote"></p>
   <label for="lang">Text language for OCR</label>
   <select id="lang"></select>
-  <div class="row" style="margin-top:6px;align-items:center"><button id="mdir">Open models folder</button><span class="tip"><button type="button" id="mdirHelp" class="ib q" aria-label="How to add a language" aria-describedby="mdirHelpBox">?</button><span class="tipbox" id="mdirHelpBox" role="tooltip" hidden>To add a language, put a folder named after it (for example <b>models/fr</b>) in that folder with det.onnx, rec.onnx and dict.txt, then restart the app.</span></span></div>
+  <div class="row mt6 aic"><button id="mdir">Open models folder</button><span class="tip"><button type="button" id="mdirHelp" class="ib q" aria-label="How to add a language" aria-describedby="mdirHelpBox">?</button><span class="tipbox" id="mdirHelpBox" role="tooltip" hidden>To add a language, put a folder named after it (for example <b>models/fr</b>) in that folder with det.onnx, rec.onnx and dict.txt, then restart the app.</span></span></div>
 
-  <h2 style="margin-top:18px">2. Translation endpoint</h2>
+  <h2 class="mt18">2. Translation endpoint</h2>
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
-  <div class="row" style="margin-top:6px"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
-  <div class="row" style="margin-top:8px;align-items:center"><label for="par" style="margin:0">Parallel requests</label><input id="par" type="number" min="1" max="16" value="1" style="width:64px"></div>
+  <div class="row mt6"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
+  <div class="row mt8 aic"><label for="par" class="m0">Parallel requests</label><input id="par" type="number" min="1" max="16" value="1" class="w64"></div>
   <label for="tgt">Translate into</label><div class="combo"><input id="tgt" value="English" role="combobox" aria-expanded="false" aria-controls="tgtList" aria-autocomplete="list" autocomplete="off" spellcheck="false"><button type="button" id="tgtBtn" class="cbtn" aria-label="Show languages" tabindex="-1">▾</button><ul id="tgtList" class="clist" role="listbox" aria-label="Languages" hidden></ul></div>
   <details class="opts" id="opts">
     <summary>Translation options <span id="optsInfo" class="st"></span></summary>
@@ -117,7 +120,7 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
     <span class="sp"></span>
     <span class="zc" id="zoomctl" role="group" aria-label="Zoom"><button id="zout" aria-label="Zoom out">−</button><span id="zl" aria-live="polite">100%</span><button id="zin" aria-label="Zoom in">+</button><button id="zfit" aria-label="Fit page to the pane">Fit</button></span></div>
   <div class="stage" id="stage"><canvas id="cv" width="620" height="760"></canvas></div>
-  <div id="blocksView" hidden><p class="note" style="margin-top:0">Edit any translation here; the page re-renders.</p><div id="blocks"><p class="note">Run the pipeline to see detected blocks.</p></div></div>
+  <div id="blocksView" hidden><p class="note mt0">Edit any translation here; the page re-renders.</p><div id="blocks"><p class="note">Run the pipeline to see detected blocks.</p></div></div>
 </section>
 <section class="run" aria-label="Run">
   <h2>3. Pipeline</h2>
@@ -132,7 +135,7 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
 </section>
 </main>
 <script>(function(){
-if(!window.__TAURI__){document.body.insertAdjacentHTML('afterbegin','<p role="alert" style="margin:0;padding:10px 20px;background:#b3261e;color:#fff">This page only works inside the Layout Translator desktop app (Tauri).</p>');document.querySelectorAll('button,input,select').forEach(e=>e.disabled=true);return}
+if(!window.__TAURI__){document.body.insertAdjacentHTML('afterbegin','<p role="alert" class="nodesk">This page only works inside the Layout Translator desktop app (Tauri).</p>');document.querySelectorAll('button,input,select').forEach(e=>e.disabled=true);return}
 
 const T=window.__TAURI__,inv=(c,a)=>T.core.invoke(c,a),$=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const cv=$('#cv'),cx=cv.getContext('2d');

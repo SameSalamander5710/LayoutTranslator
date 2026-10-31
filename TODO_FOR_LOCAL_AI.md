@@ -46,7 +46,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 
 ## G. Translation endpoint
 - [x] G1. Test connection button and status field added (`test_connection`, 5 s timeout, checks `GET {base}/models`).
-- [ ] G3. `"csp": null` in `tauri.conf.json` is a development setting. Write a strict CSP for release.
+- [x] G3. `tauri.conf.json` sets a strict Content Security Policy: `default-src 'none'`; `script-src` and `style-src` only `'self'` (Tauri adds a hash for the inline script and a nonce for the inline style by itself); `img-src 'self' data:` (pages travel as data URLs); `connect-src ipc: http://ipc.localhost` (Tauri IPC only; the app never calls the network from the web view, `reqwest` does that in Rust); `base-uri` and `form-action` `'none'`. No `unsafe-inline`, no `unsafe-eval`. `index.html` has no `style=""` attributes (classes instead; helper classes are at the end of the stylesheet) and no inline event handlers. `npm run check:csp` checks both files and runs in CI. Checked in Chromium with the policy as Tauri sends it: the whole UI works with no violation, and inline handlers, `eval`, remote scripts, images and fetches, iframes and `style` attributes are blocked. Still to do: a look at the DevTools console in a real Windows and macOS build (WebView2 and WKWebView).
 - [x] G4. Large pages are split into batches (`BATCH_MAX_BLOCKS`, `BATCH_MAX_CHARS`), and a chunk that fails is retried without the page context and then one block at a time.
 
 ## H. Tests

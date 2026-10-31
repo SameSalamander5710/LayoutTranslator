@@ -59,6 +59,9 @@ jobs:
 
       - run: npm ci          # installs exactly what package-lock.json says
 
+      # Fails the build if the security policy (CSP) is weakened or index.html uses something the policy blocks
+      - run: npm run check:csp
+
       # Third-party runtime files (pdfium, OCR models, fonts), pinned in scripts/models.json
       - run: npm run models
 
