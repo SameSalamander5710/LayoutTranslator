@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use layout_translator::launcher;
 use layout_translator::pipeline::{self, Block, EngineCache};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -37,8 +38,42 @@ fn list_languages(app: AppHandle) -> Vec<String> {
 fn open_models_dir(app: AppHandle) -> Result<(), String> {
     let d = roots(&app).into_iter().next().ok_or("no models folder")?;
     std::fs::create_dir_all(&d).ok();
-    std::process::Command::new(if cfg!(windows) { "explorer" } else { "open" }).arg(d)
-        .spawn().map(|_| ()).map_err(|e| e.to_string())
+    launcher::open_folder(&d)
+}
+
+// ---- Server launcher: the command that starts the translation server (see launcher.rs) ----
+
+/// The places for the command file: next to the program, then the per-user folder (only that one on macOS).
+fn command_files(app: &AppHandle) -> Vec<PathBuf> {
+    launcher::command_file_candidates(app.path().resource_dir().ok().as_deref(), app.path().app_data_dir().ok().as_deref(), !cfg!(target_os = "macos"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerCommand { command: String, path: String }
+impl From<launcher::StoredCommand> for ServerCommand {
+    fn from(s: launcher::StoredCommand) -> Self { Self { command: s.command, path: s.path.display().to_string() } }
+}
+
+#[tauri::command]
+fn get_server_command(app: AppHandle) -> Result<ServerCommand, String> { launcher::load_command(&command_files(&app)).map(Into::into) }
+
+#[tauri::command]
+fn save_server_command(app: AppHandle, command: String) -> Result<ServerCommand, String> { launcher::save_command(&command_files(&app), &command).map(Into::into) }
+
+/// Runs the saved command in a new terminal window. It takes no argument on purpose: only the saved command can be started.
+#[tauri::command]
+async fn launch_server(app: AppHandle) -> Result<(), String> {
+    let saved = launcher::load_command(&command_files(&app))?;
+    launcher::launch(&saved.command, &launcher::Env::current())
+}
+
+#[tauri::command]
+fn open_server_command_folder(app: AppHandle) -> Result<(), String> {
+    let file = launcher::load_command(&command_files(&app))?.path;
+    let dir = file.parent().ok_or("The command file has no folder")?;
+    std::fs::create_dir_all(dir).ok();
+    launcher::open_folder(dir)
 }
 
 #[derive(Serialize)]
@@ -213,13 +248,15 @@ fn main() {
             clear_pages(app.handle());
             // A panic that is not inside a command would close the app silently; keep a trace for bug reports.
             if let Ok(d) = app.path().app_data_dir() { layout_translator::crashlog::install(d.join("last-error.log")); }
+            // Scripts of the server launcher that a crash left behind
+            launcher::sweep_old_scripts(&std::env::temp_dir(), std::time::Duration::from_secs(24 * 3600));
             Ok(())
         })
         .on_window_event(|window, event| { if let tauri::WindowEvent::Destroyed = event { clear_pages(window.app_handle()); } })
         .manage(EngineCache::default())
         .manage(pipeline::TranslationCache::default())
         .manage(RunControl::default())
-        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, run_ocr, translate_blocks, cancel_run, read_region, sample_colors, test_connection, render_page, open_document, paste_image, preview, export_pdf])
+        .invoke_handler(tauri::generate_handler![list_languages, open_models_dir, get_server_command, save_server_command, launch_server, open_server_command_folder, run_ocr, translate_blocks, cancel_run, read_region, sample_colors, test_connection, render_page, open_document, paste_image, preview, export_pdf])
         .run(tauri::generate_context!())
         .expect("error while running app");
 }

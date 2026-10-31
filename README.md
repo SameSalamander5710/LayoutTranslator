@@ -8,6 +8,24 @@ Drop in an image, get it back with the text translated in the same layout. OCR i
 3. Create icons once: `npx tauri icon path\to\any-square.png`.
 4. `llama-server -m your-model.gguf --port 8080 -np 4 -c 16384`, then `npm run tauri dev`. `-np` is the number of requests the server handles at once; set the same number under "Parallel requests" in the app (the Test connection button reads it for you). The context size `-c` is shared between the slots, so use about 4096 per slot.
 
+## Start the server from the app
+Next to **Test connection** is the **Launch server** button. It runs a command that you set, for example the `llama-server` command from step 4 above.
+1. Click the pencil icon next to **Launch server**.
+2. Paste your command and click **Save**.
+3. Click **Launch server**. A terminal window opens and runs the command.
+4. Click **Test connection** when the model has loaded.
+
+Close the terminal window to stop the server.
+
+The command is a plain text file named `server-command.txt`. Any text editor can change it, and the **Show file** button opens its folder. The file is next to the program when that folder is writable (the Windows installer and the portable zip). Otherwise it is in the per-user app data folder. On macOS it is always there, because the app folder is inside the signed app.
+
+The terminal depends on the system:
+- Windows: `cmd.exe`. The command runs as a batch file, so write a percent sign as `%%`.
+- macOS: Terminal.
+- Linux: the program in the `TERMINAL` environment variable, or the first of `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `mate-terminal`, `kitty`, `alacritty`, `lxterminal` and `xterm` that is installed.
+
+The command runs with your user rights, exactly as you wrote it. Do not use a command that you do not trust.
+
 ## Languages
 The English model ships in `models/en` next to the app. To add one, create `models/<name>/` there with `det.onnx`, `rec.onnx`, `dict.txt` and restart. The Windows installer is per-user so that folder is writable.
 

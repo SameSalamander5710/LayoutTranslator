@@ -7,6 +7,11 @@ Layout Translator - portable version
 Keep the folders models, fonts and pdfium next to the .exe. To add an OCR language,
 create models\<name>\ with det.onnx, rec.onnx and dict.txt next to the .exe and restart.
 
+Launch server (optional)
+The "Launch server" button next to "Test connection" runs a command that you set with the
+pencil icon, for example your llama-server command. The command is saved in
+server-command.txt next to the .exe. Any text editor can change that file.
+
 Requirements
 - Windows 10 or 11 with the Microsoft Edge WebView2 Runtime. Windows 11 and updated
   Windows 10 have it. If the window stays empty or the app does not start, install the

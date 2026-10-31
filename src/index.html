@@ -41,7 +41,7 @@ canvas{flex:none;margin:auto;box-shadow:0 1px 8px rgba(0,0,0,.25);background:#ff
 details.opts{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
 details.opts summary{cursor:pointer;font-size:13px}details.opts summary .st{margin-left:4px}
 .chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink);margin-top:10px}.chk input{width:auto}
-.hint{color:var(--mute)}textarea{resize:vertical;font:inherit}
+.hint{color:var(--mute)}textarea{resize:vertical;font:inherit}#srvCmd{font:12px/1.4 Consolas,Menlo,monospace;white-space:pre;overflow:auto}.pair{display:inline-flex;gap:8px}
 .blk.sel{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}.blk textarea.src{color:var(--mute)}
 button.sm{padding:3px 10px;font-size:12px;margin-top:6px}#boxbar .note{margin:0}
 button.ib{display:inline-flex;align-items:center;justify-content:center;padding:5px 8px}button.ib svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
@@ -84,7 +84,14 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
 
   <h2 class="mt18">2. Translation endpoint</h2>
   <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
-  <div class="row mt6"><button id="test">Test connection</button><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
+  <div class="row mt6"><button id="test">Test connection</button><span class="pair"><button id="launch">Launch server</button><button type="button" id="srvEditBtn" class="ib" aria-label="Edit the command of Launch server" title="Edit the command of Launch server" aria-expanded="false" aria-controls="srvEdit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button></span><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
+  <div id="srvEdit" hidden>
+    <label for="srvCmd">Command that starts your translation server</label>
+    <textarea id="srvCmd" rows="4" spellcheck="false" autocomplete="off" placeholder="llama-server -m /path/to/model.gguf --port 8080 -np 2 -c 8192"></textarea>
+    <div class="row mt6 aic"><button id="srvSave" class="p">Save</button><button id="srvCancel">Cancel</button><button id="srvShow">Show file</button></div>
+    <p class="note" id="srvNote"></p>
+    <p class="note mt0">Launch server runs this command in a new terminal window that stays open. Close that window to stop the server. On Windows the command runs as a batch file, so write a percent sign as %%.</p>
+  </div>
   <div class="row mt8 aic"><label for="par" class="m0">Parallel requests</label><input id="par" type="number" min="1" max="16" value="1" class="w64"></div>
   <label for="tgt">Translate into</label><div class="combo"><input id="tgt" value="English" role="combobox" aria-expanded="false" aria-controls="tgtList" aria-autocomplete="list" autocomplete="off" spellcheck="false"><button type="button" id="tgtBtn" class="cbtn" aria-label="Show languages" tabindex="-1">▾</button><ul id="tgtList" class="clist" role="listbox" aria-label="Languages" hidden></ul></div>
   <details class="opts" id="opts">
@@ -392,6 +399,27 @@ $('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;
     if(r.slots){const n=Math.min(16,r.slots);$('#par').value=n;localStorage.setItem("lt_par",n)} // use the server's -np value
     setConn(r.warning?"warn":"ok","✓ "+r.message+(r.warning?" ⚠ "+r.warning:""))}catch(e){setConn("bad","✗ "+e)}$('#test').disabled=false};
 $('#url').addEventListener('input',()=>setConn("","Not tested"));
+// ---- Launch server: runs a command that the user sets. The command is kept in a text file (server-command.txt, see launcher.rs). ----
+let srvSaved="";
+const srvEdit=$('#srvEdit'),srvCmd=$('#srvCmd');
+function srvShowPanel(on){srvEdit.hidden=!on;$('#srvEditBtn').setAttribute('aria-expanded',String(on));if(on){srvCmd.value=srvSaved;srvCmd.focus()}}
+function srvStored(r){srvSaved=r.command;$('#srvNote').textContent=`The command is saved in ${r.path}. Any text editor can change that file.`}
+async function srvLoad(){try{srvStored(await inv('get_server_command'))}catch(e){log("Error: "+errText(e))}}
+async function srvSave(){try{const r=await inv('save_server_command',{command:srvCmd.value});srvStored(r);srvShowPanel(false);log(r.command?`Server command saved in ${r.path}`:"Server command cleared.");return true}
+  catch(e){log("Error: "+errText(e));return false}}
+$('#srvEditBtn').onclick=()=>srvShowPanel(srvEdit.hidden);
+$('#srvSave').onclick=srvSave;
+$('#srvCancel').onclick=()=>srvShowPanel(false);
+$('#srvShow').onclick=()=>inv('open_server_command_folder').catch(e=>log("Error: "+errText(e)));
+srvCmd.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();srvShowPanel(false);$('#srvEditBtn').focus()}});
+$('#launch').onclick=async()=>{const b=$('#launch');
+  if(!srvEdit.hidden&&srvCmd.value.trim()!==srvSaved.trim()&&!await srvSave())return;   // a command that is typed but not saved yet is saved first
+  if(!srvSaved.trim()){srvShowPanel(true);setConn("warn","Enter the command that starts your server, then click Save.");return}
+  b.disabled=true;
+  try{await inv('launch_server');setConn("","Server window opened. Click Test connection when the model has loaded.");log("Server command started in a new terminal window.")}
+  catch(e){setConn("bad","✗ "+errText(e));log("Error: "+errText(e))}
+  setTimeout(()=>{b.disabled=false},2000)};            // not twice by accident
+srvLoad();
 $('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
 (function(){const t=$('#mdirHelp'),box=$('#mdirHelpBox'),wrap=t.parentElement;
   const show=()=>{const r=t.getBoundingClientRect(),w=box.offsetWidth||260;
