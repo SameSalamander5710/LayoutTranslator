@@ -55,9 +55,12 @@ jobs:
         with:
           node-version: lts/*
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # The Rust version pinned in rust-toolchain.toml (the same one that ci.yml tests with), plus the build target if any
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          if [ -n "${{ matrix.target }}" ]; then rustup target add "${{ matrix.target }}"; fi
 
       - uses: swatinem/rust-cache@v2
         with:

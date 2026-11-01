@@ -1,0 +1,68 @@
+# Runs the tests and the checks on every push to master and on every pull request.
+# (release.yml builds the installers; it does not run any test, so a red test never blocks a release by itself.
+# Look at this workflow before you publish a draft release.)
+#
+# What runs: the CSP check, the Rust unit tests and clippy (warnings are errors) on Linux. Formatting is not checked:
+# the code uses a compact hand-written style, and rustfmt would rewrite most of it.
+name: ci
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+# A new push to the same branch or pull request cancels the run that is still going
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      # The Rust version pinned in rust-toolchain.toml
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      # What Tauri needs to compile (GTK, WebKitGTK 4.1). The tests do not open a window.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libayatana-appindicator3-dev patchelf file xdg-utils
+
+      - run: npm ci
+
+      # Fails if the security policy (CSP) is weakened or index.html uses something the policy blocks
+      - run: npm run check:csp
+
+      # Fonts, OCR models and pdfium that some tests read; kept between runs, pinned by scripts/models.json
+      - uses: actions/cache@v4
+        with:
+          path: src-tauri/resources
+          key: resources-${{ hashFiles('scripts/models.json') }}
+      - run: npm run models
+
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings

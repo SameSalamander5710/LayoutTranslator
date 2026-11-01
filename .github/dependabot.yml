@@ -1,0 +1,32 @@
+# Weekly pull requests for newer dependencies. Minor and patch updates of a kind come as ONE pull request, so the
+# tests in ci.yml run once for all of them. Major updates come as separate pull requests, because they can break the code.
+# Not covered by Dependabot: the Rust version in rust-toolchain.toml (update it by hand) and the models and fonts in
+# scripts/models.json (pinned by checksum on purpose).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ['*']

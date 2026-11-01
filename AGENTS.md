@@ -14,3 +14,4 @@ This is a Tauri v2 app: Rust core in `src-tauri/src`, plain HTML/JS UI in `src/`
 - The web view has a strict Content Security Policy (`app.security.csp` in `tauri.conf.json`). In `src/index.html` never add `style="..."` attributes, inline event handlers (`onclick="..."`), `eval`, or resources from the internet. Use CSS classes, `element.onclick = ...` and `element.style.property = ...`. Run `npm run check:csp` after you edit the page or the policy.
 - Fix compile errors at the root cause; do not silence them with `unwrap` or `allow`.
 - Translation is a local llama.cpp server only (base URL, no API key or model name). Do not add Google Translate or hosted APIs.
+- `ci.yml` runs `cargo test` and `cargo clippy --all-targets -- -D warnings` on every push and pull request. Run both in `src-tauri` before you push.

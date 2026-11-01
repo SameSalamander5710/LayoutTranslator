@@ -1,0 +1,7 @@
+# The Rust version this project is built and tested with. Everyone (developers, ci.yml, release.yml) uses exactly this one,
+# so a new Rust release can never break the build by surprise. To update: change the version here and in `rust-version`
+# in src-tauri/Cargo.toml, run the tests, commit.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy"]
