@@ -236,7 +236,7 @@ pub fn sweep_old_scripts(dir: &Path, max_age: Duration) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let name = e.file_name();
-        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(false, |age| age > max_age);
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > max_age);
         if name.to_string_lossy().starts_with(SCRIPT_PREFIX) && old { let _ = std::fs::remove_file(e.path()); }
     }
 }

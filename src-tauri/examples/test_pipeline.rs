@@ -95,7 +95,7 @@ fn render(a: &[String]) {
             top = top.min(i as f32 * ls + t2);
             bot = bot.max(i as f32 * ls + b2);
         }
-        let ok = top != f32::MAX && bot - top <= h && lines.iter().all(|l| layout_translator::pipeline::text_geom(&font, px, l).2 <= w as f32);
+        let ok = top != f32::MAX && bot - top <= h && lines.iter().all(|l| layout_translator::pipeline::text_geom(&font, px, l).2 <= w);
         println!("#{} px={px:.1} lines={} ink_h={:.1}/box_h={:.0} x={:.0} y={:.0} fit={ok} {:?}", b.id, lines.len(), bot - top, h, x, y, t);
     }
     let im = pipeline::render(Path::new(&a[0]), Path::new(&a[2]), &blocks).expect("render failed");
@@ -104,7 +104,7 @@ fn render(a: &[String]) {
 }
 
 fn geom(a: &[String]) {
-    if a.len() < 1 { usage(); }
+    if a.is_empty() { usage(); }
     let font = ab_glyph::FontArc::try_from_vec(std::fs::read(&a[0]).unwrap()).unwrap();
     for s in ["Ag", "A", "g", "ß", "Tag der Deutschen Einheit"] {
         let (t, b, w) = pipeline::text_geom(&font, 100.0, s);

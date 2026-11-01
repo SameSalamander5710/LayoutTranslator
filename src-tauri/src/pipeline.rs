@@ -85,9 +85,11 @@ fn ocr_lines(im: &RgbImage, dir: &Path, cache: &EngineCache) -> Result<Vec<Line>
         match m.get(&key) {
             Some(e) => e.clone(),
             None => {
-                let mut det = oar_ocr::domain::TextDetectionConfig::default();
-                det.score_threshold = 0.25; // default 0.3: lower catches faint/small lines
-                det.box_threshold = 0.5; // default 0.6: lower keeps smaller boxes
+                let det = oar_ocr::domain::TextDetectionConfig {
+                    score_threshold: 0.25, // default 0.3: lower catches faint/small lines
+                    box_threshold: 0.5,    // default 0.6: lower keeps smaller boxes
+                    ..Default::default()
+                };
                 let e = Arc::new(
                     OAROCRBuilder::new(p("det.onnx"), p("rec.onnx"), p("dict.txt"))
                         .text_detection_config(det)
@@ -113,7 +115,7 @@ fn ocr_lines(im: &RgbImage, dir: &Path, cache: &EngineCache) -> Result<Vec<Line>
             lines.push(Line {
                 b: [x0, y0, x1 - x0, y1 - y0],
                 t: t.to_string(),
-                c: c,
+                c,
                 fg,
                 bg,
                 layer: false,
@@ -192,6 +194,7 @@ fn overlap_frac(a: &[f32; 4], b: &[f32; 4]) -> f32 {
 ///    selectable text painted over, so only the remaining text is read. OCR lines that still fall
 ///    on selectable text are dropped.
 /// 3. All lines are grouped into blocks together.
+///
 /// With `allow_ocr == false` only step 1 runs (selectable text only; images and scanned text are ignored).
 pub fn ocr_hybrid(img: &Path, dir: &Path, cache: &EngineCache, layer: &TextLayer, allow_ocr: bool) -> Result<(Vec<Block>, usize, bool), String> {
     let im = load_oriented(img)?.to_rgb8();
@@ -218,6 +221,7 @@ pub fn ocr_hybrid(img: &Path, dir: &Path, cache: &EngineCache, layer: &TextLayer
 /// - "hybrid": selectable PDF text first, OCR for the rest (plain images are just OCR'd)
 /// - "ocr":    OCR only, the PDF text layer is ignored
 /// - "text":   selectable PDF text only, nothing is OCR'd
+///
 /// Returns (blocks, lines taken from the text layer, whether OCR ran).
 pub fn detect(img: &Path, dir: &Path, cache: &EngineCache, mode: &str) -> Result<(Vec<Block>, usize, bool), String> {
     let layer = if mode == "ocr" { None } else { load_layer(img) };
@@ -299,7 +303,7 @@ fn tighten(im: &RgbImage, b: &mut Block) {
     let get = |a: u32, c: u32| { let p = im.get_pixel(a, c); [p[0], p[1], p[2]] };
     // Text-coloured pixels stay out of the page colour: lettering (and a margin of the same colour) must not become the "page".
     // Text that is hardly different from its page is then not found at all, and the box stays as it is.
-    let page = PageColours::new(iw, ih, &get, ex0, ey0, ex1, ey1, (y1 - y0) as f32, Some((b.fg, 60)));
+    let page = PageColours::new(iw, ih, &get, (ex0, ey0, ex1, ey1), (y1 - y0) as f32, Some((b.fg, 60)));
     let like: Vec<bool> = (0..ew * eh).map(|k| color_dist(&get(ex0 + (k % ew) as u32, ey0 + (k / ew) as u32), &b.fg) <= TIGHT_FG_TOL).collect();
     let mut out = vec![false; ew * eh]; // text-coloured pixels connected to the border of the crop
     let mut todo: Vec<usize> = (0..ew * eh).filter(|k| (k % ew == 0 || k % ew == ew - 1 || k / ew == 0 || k / ew == eh - 1) && like[*k]).collect();
@@ -312,10 +316,10 @@ fn tighten(im: &RgbImage, b: &mut Block) {
     }
     let (cw, ch) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
     let (mut rows, mut total) = (vec![0u32; ch], 0u32);
-    for j in 0..ch { for i in 0..cw {
+    for (j, row) in rows.iter_mut().enumerate() { for i in 0..cw {
         let (a, c) = (x0 + i as u32, y0 + j as u32);
         let k = (c - ey0) as usize * ew + (a - ex0) as usize;
-        if like[k] && !out[k] && color_dist(&get(a, c), &page.at(a as i32, c as i32)) >= 30 { rows[j] += 1; total += 1; }
+        if like[k] && !out[k] && color_dist(&get(a, c), &page.at(a as i32, c as i32)) >= 30 { *row += 1; total += 1; }
     } }
     if total < TIGHT_MIN_PIXELS { return; }
     let need = ((cw as f32 * 0.02) as u32).max(2);
@@ -378,7 +382,7 @@ fn box_colors(img: &RgbImage, x: f32, y: f32, bw: f32, bh: f32) -> ([u8; 3], [u8
     let d = |p: &Rgb<u8>| (0..3).map(|c| (p[c] as i32 - bg[c] as i32).abs()).sum::<i32>();
     let mut inner: Vec<(i32, Rgb<u8>)> = vec![];
     for yy in cl(y, h)..=cl(y + bh, h) { for xx in cl(x, w)..=cl(x + bw, w) { let p = *img.get_pixel(xx, yy); inner.push((d(&p), p)); } }
-    inner.sort_by(|a, c| c.0.cmp(&a.0));
+    inner.sort_by_key(|p| std::cmp::Reverse(p.0));
     let n = (inner.len() / 10).max(1);
     let mut fg = [0u8; 3];
     for c in 0..3 { fg[c] = (inner[..n].iter().map(|(_, p)| p[c] as u32).sum::<u32>() / n as u32) as u8; }
@@ -392,12 +396,13 @@ fn box_colors(img: &RgbImage, x: f32, y: f32, bw: f32, bh: f32) -> ([u8; 3], [u8
 /// `skip` leaves out the pixels within the given colour distance of a colour (the text colour, once it is known).
 struct PageColours { x0: i32, y0: i32, g: usize, nx: usize, cells: Vec<[u8; 3]> }
 impl PageColours {
-    fn new(w: u32, h: u32, get: &dyn Fn(u32, u32) -> [u8; 3], x0: u32, y0: u32, x1: u32, y1: u32, text_h: f32, skip: Option<([u8; 3], i32)>) -> PageColours {
+    fn new(w: u32, h: u32, get: &dyn Fn(u32, u32) -> [u8; 3], rect: (u32, u32, u32, u32), text_h: f32, skip: Option<([u8; 3], i32)>) -> PageColours {
+        let (x0, y0, x1, y1) = rect; // the rectangle (inclusive) to compute the colours for
         let (cw, ch) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
         let g = (((cw * ch) as f32 / 1500.0).sqrt().ceil() as usize).max(3);
         let r = ((text_h * 0.75) as i32).clamp(6, 30);
         let step = (r / 6).max(2);
-        let (nx, ny) = ((cw + g - 1) / g, (ch + g - 1) / g);
+        let (nx, ny) = (cw.div_ceil(g), ch.div_ceil(g));
         let mut cells: Vec<[u8; 3]> = Vec::with_capacity(nx * ny);
         let mut win: [Vec<u8>; 3] = Default::default();
         for cy in 0..ny { for cx in 0..nx {
@@ -410,7 +415,7 @@ impl PageColours {
                 while xx <= (mx + r).min(w as i32 - 1) {
                     let p = get(xx as u32, yy as u32);
                     // pixels that already have the text colour are left out, so lettering thicker than half the window cannot become the "background"
-                    if skip.map_or(true, |(c, tol)| (0..3).map(|k| (p[k] as i32 - c[k] as i32).abs()).sum::<i32>() >= tol) { for c in 0..3 { win[c].push(p[c]); } }
+                    if skip.is_none_or(|(c, tol)| (0..3).map(|k| (p[k] as i32 - c[k] as i32).abs()).sum::<i32>() >= tol) { for c in 0..3 { win[c].push(p[c]); } }
                     xx += step;
                 }
                 yy += step;
@@ -443,7 +448,7 @@ fn text_colour(img: &RgbImage, x: f32, y: f32, bw: f32, bh: f32) -> Option<[u8; 
     let (x1, y1) = (((x + bw) as u32).min(w - 1), ((y + bh) as u32).min(h - 1));
     if x1 <= x0 + 1 || y1 <= y0 + 1 { return None; }
     let get = |a: u32, c: u32| { let p = img.get_pixel(a, c); [p[0], p[1], p[2]] };
-    let page = PageColours::new(w, h, &get, x0, y0, x1, y1, bh, None);
+    let page = PageColours::new(w, h, &get, (x0, y0, x1, y1), bh, None);
     let mut px: Vec<(i32, [u8; 3])> = Vec::with_capacity(((x1 - x0 + 1) * (y1 - y0 + 1)) as usize);
     for j in y0..=y1 { for i in x0..=x1 {
         let (p, b) = (get(i, j), page.at(i as i32, j as i32));
@@ -760,7 +765,7 @@ async fn model_id(client: &reqwest::Client, base: &str) -> String {
 /// `only` limits translation to those block ids; those are always translated afresh, never taken from the cache.
 /// With `max_parallel` > 1 the page is cut into small chunks (about two per slot) and up to `max_parallel` requests run at
 /// once; each request carries the same context, so the results do not depend on the order they finish in.
-pub async fn translate(blocks: &mut Vec<Block>, target: &str, base: &str, opts: &TranslateOptions, only: Option<&[u32]>, cache: &TranslationCache)
+pub async fn translate(blocks: &mut [Block], target: &str, base: &str, opts: &TranslateOptions, only: Option<&[u32]>, cache: &TranslationCache)
     -> Result<(usize, usize), String> {
     let par = opts.max_parallel.clamp(1, 16);
     let client = http();
@@ -952,7 +957,7 @@ fn text_geom_cached(f: &FontArc, px: f32, text: &str, cache: &mut GlyphCache) ->
 pub fn line_spacing(f: &FontArc, px: f32) -> f32 {
     use ab_glyph::Font as _;
     let upem = f.units_per_em().unwrap_or(1000.0);
-    f.height_unscaled() as f32 / upem * px
+    f.height_unscaled() / upem * px
 }
 
 fn fits(f: &FontArc, text: &str, w: u32, h: u32, px: f32) -> bool {
@@ -1137,7 +1142,7 @@ fn analyse_crop(im: &image::RgbaImage, b: &Block) -> Option<Crop> {
     // With a clear text colour, pixels of that colour stay out of the median: heavy lettering (stems wider than half of the
     // window, a solid bar) would otherwise become the "page colour" and stop looking like text.
     let skip = if contrast >= 120 { Some((b.fg, 60)) } else { None };
-    let page = PageColours::new(iw, ih, &get, x0 as u32, y0 as u32, x1 as u32, y1 as u32, h, skip);
+    let page = PageColours::new(iw, ih, &get, (x0 as u32, y0 as u32, x1 as u32, y1 as u32), h, skip);
     let bgs: Vec<[f32; 3]> = (0..cw * ch).map(|k| { let c = page.at(x0 + (k % cw) as i32, y0 + (k / cw) as i32); [c[0] as f32, c[1] as f32, c[2] as f32] }).collect();
     // A pixel belongs to the text if it differs from the background behind it by more than a share of the text contrast.
     // Dark text on a light page gives the old fixed limit of 60; faint text gets a lower limit, but never below 24 (noise).
@@ -1224,7 +1229,7 @@ fn erase_group_with(im: &image::RgbaImage, blocks: &[&Block], others: &[[f32; 4]
     let mut buf: Vec<[f32; 3]> = (0..gw * gh).map(|k| if hole[k] { plane[k] } else { let q = at(k); [q[0] as f32, q[1] as f32, q[2] as f32] }).collect();
     for _ in 0..passes { for j in 0..gh { for i in 0..gw { if hole[j * gw + i] {
         let n = [(i.saturating_sub(1), j), ((i + 1).min(gw - 1), j), (i, j.saturating_sub(1)), (i, (j + 1).min(gh - 1))];
-        for k in 0..3 { buf[j * gw + i][k] = n.iter().map(|(a, c)| buf[c * gw + a][k]).sum::<f32>() / 4.0; }
+        buf[j * gw + i] = [0, 1, 2].map(|k| n.iter().map(|(a, c)| buf[c * gw + a][k]).sum::<f32>() / 4.0);
     } } } }
     Some(Patch((0..gw * gh).filter(|&k| hole[k]).map(|k| to_px(k, buf[k])).collect()))
 }
@@ -1282,9 +1287,9 @@ fn push_pull(rgb: &[[f32; 3]], known: &[bool], w: usize, h: usize) -> Vec<[f32; 
     // Every cell holds [r*weight, g*weight, b*weight, weight]; averaging four cells keeps colour and weight in step.
     let base: Vec<[f32; 4]> = rgb.iter().zip(known).map(|(c, &k)| if k { [c[0], c[1], c[2], 1.0] } else { [0.0; 4] }).collect();
     let mut lv: Vec<(Vec<[f32; 4]>, usize, usize)> = vec![(base, w, h)];
-    while lv.last().map_or(false, |l| l.1 > 1 || l.2 > 1) {
+    while lv.last().is_some_and(|l| l.1 > 1 || l.2 > 1) {
         let (src, sw, sh) = lv.last().unwrap();
-        let (dw, dh) = ((sw + 1) / 2, (sh + 1) / 2);
+        let (dw, dh) = (sw.div_ceil(2), sh.div_ceil(2));
         let mut dst = vec![[0f32; 4]; dw * dh];
         for y in 0..*sh { for x in 0..*sw {
             let s = src[y * sw + x];
@@ -1359,7 +1364,7 @@ fn page_text_layer(page: &pdfium_render::prelude::PdfPage, scale: f32) -> TextLa
             if c.is_control() { continue; }
             let Ok(r) = ch.loose_bounds() else { continue };
             let (l, rt, tp, bt) = (r.left().value, r.right().value, r.top().value, r.bottom().value);
-            let joins = cur.as_ref().map_or(false, |u| {
+            let joins = cur.as_ref().is_some_and(|u| {
                 let h = u.t - u.b;
                 (tp.min(u.t) - bt.max(u.b)) > 0.5 * (tp - bt).min(h) && l - u.r > -0.8 * h && l - u.r < MAX_WORD_GAP * h
             });
@@ -1964,7 +1969,7 @@ mod tests {
         (b.fg, b.bg) = box_colors(&page, loose[0], loose[1], loose[2], loose[3]);
         tighten(&page, &mut b);
         let [x, y, w, h] = b.bbox;
-        assert!(y >= 52.0 && y <= 60.0 && y + h >= 140.0 && y + h <= 148.0, "y range {y}..{}", y + h);
+        assert!((52.0..=60.0).contains(&y) && y + h >= 140.0 && y + h <= 148.0, "y range {y}..{}", y + h);
         assert_eq!((x, w), (loose[0], loose[2]), "the width is not touched");
         assert!(y >= loose[1] && y + h <= loose[1] + loose[3], "the box grew");
     }
