@@ -2,7 +2,7 @@
 # (release.yml builds the installers; it does not run any test, so a red test never blocks a release by itself.
 # Look at this workflow before you publish a draft release.)
 #
-# What runs: the CSP check, the Rust unit tests and clippy (warnings are errors) on Linux. Formatting is not checked:
+# What runs: the CSP and version checks, the Rust unit tests and clippy (warnings are errors) on Linux. Formatting is not checked:
 # the code uses a compact hand-written style, and rustfmt would rewrite most of it.
 name: ci
 
@@ -51,6 +51,9 @@ jobs:
 
       # Fails if the security policy (CSP) is weakened or index.html uses something the policy blocks
       - run: npm run check:csp
+
+      # Fails if the app version is not the same in all six places (see scripts/version.mjs)
+      - run: npm run check:version
 
       # Fonts, OCR models and pdfium that some tests read; kept between runs, pinned by scripts/models.json
       - uses: actions/cache@v4

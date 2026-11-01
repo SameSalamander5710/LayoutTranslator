@@ -42,8 +42,10 @@ input file
 **Data contract** (Rust `struct` with serde, same JSON the UI uses):
 
 ```
-TextBlock { id, page, bbox:[x,y,w,h], text, translated?, conf, fontPx, weight, fg, bg, angle? }
+Block { id, bbox:[x,y,w,h], text, translated?, conf, fontPx, fg, bg }
 ```
+
+`bbox` is in pixels of the page image, `fg` is the text colour and `bg` the page colour around the text (both `[r,g,b]`). A page is a flat list of blocks; which page it belongs to is known only to the UI. `fontPx` is filled in but not used: the typeset text is as large as fits the box. Rotated text (`angle`) and bold text (`weight`) are not modelled yet. The struct is `Block` in `src-tauri/src/pipeline.rs`; if you change it, change the JS objects in `src/index.html` in the same commit.
 
 ## 3. Technology decisions
 
