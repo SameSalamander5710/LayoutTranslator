@@ -29,10 +29,15 @@
   },
   "bundle": {
     "active": true,
+    "shortDescription": "Translate the text in images and PDFs and keep the layout",
+    "longDescription": "Detects the text in an image or PDF with PaddleOCR, translates it with a local llama.cpp server and puts the translation back into the same layout.",
     "targets": [
       "nsis",
       "dmg",
-      "app"
+      "app",
+      "deb",
+      "rpm",
+      "appimage"
     ],
     "icon": [
       "icons/32x32.png",

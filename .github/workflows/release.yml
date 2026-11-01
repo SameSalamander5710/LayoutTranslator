@@ -1,4 +1,4 @@
-# Builds the Windows and macOS installers AND portable ("standalone") zips.
+# Builds the Windows, macOS and Linux installers AND portable ("standalone") archives.
 #
 # When it runs
 # - Every push to master: builds everything and replaces the pre-release called "nightly" ("Latest build (master)")
@@ -37,6 +37,12 @@ jobs:
             suffix: macos-arm64
             target: aarch64-apple-darwin
             args: '--target aarch64-apple-darwin -- --locked'
+          # Ubuntu 22.04 on purpose: the oldest runner that Tauri v2 supports (webkit2gtk 4.1), so that the binary, which needs
+          # the glibc of the machine it was built on, runs on as many distributions as possible. x86_64 only.
+          - platform: ubuntu-22.04
+            suffix: linux-x64
+            target: ''
+            args: '-- --locked'
           # No Intel Mac build: ort-sys 2.0.0-rc.13 (pinned by oar-ocr) has no prebuilt ONNX Runtime for x86_64-apple-darwin,
           # and Microsoft stopped publishing Intel macOS builds after ONNX Runtime 1.23.2 (ort rc.13 needs 1.28). To bring it
           # back, ONNX Runtime 1.28 would have to be built from source on a macos-15-intel runner and passed to the build
@@ -57,6 +63,13 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      # Linux only: what Tauri needs to compile (GTK, WebKitGTK 4.1) and to make the .deb, .rpm and AppImage
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libayatana-appindicator3-dev patchelf file xdg-utils
+
       - run: npm ci          # installs exactly what package-lock.json says
 
       # Fails the build if the security policy (CSP) is weakened or index.html uses something the policy blocks
@@ -65,13 +78,18 @@ jobs:
       # Third-party runtime files (pdfium, OCR models, fonts), pinned in scripts/models.json
       - run: npm run models
 
-      # The installer (NSIS on Windows, dmg on macOS) and, on macOS, the .app.
+      # The installers (NSIS on Windows, dmg on macOS, deb + rpm + AppImage on Linux) and, on macOS, the .app.
       # Optional macOS signing/notarization: add the APPLE_* secrets as env here later.
+      # APPIMAGE_EXTRACT_AND_RUN: the AppImage tools run without FUSE, which a build machine may not have.
       - run: npx tauri build ${{ matrix.args }}
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
 
       # Collect what is published into dist/. The portable (standalone) zip needs no installer:
       # Windows: the .exe plus the models, fonts and pdfium folders next to it (that is where the app looks for them).
       # macOS: the .app, which already contains its resources.
+      # Linux: a tar.gz with the same folders as an installed copy (the app looks in ../lib/Layout Translator next to its
+      # executable), so that it finds its models, fonts and pdfium without being installed. The AppImage is standalone too.
       - name: Collect installer and portable zip (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -100,13 +118,30 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$name.zip"
           ls -l dist
 
+      - name: Collect installers and portable archive (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          name="LayoutTranslator_${version}_${{ matrix.suffix }}_portable"
+          bundle="src-tauri/target/release/bundle"
+          mkdir -p dist "stage/$name/bin" "stage/$name/lib/Layout Translator"
+          # The binary must not depend on a library that is only on the build machine (ONNX Runtime has to be linked in)
+          if ldd src-tauri/target/release/layout-translator | grep "not found"; then echo "the binary has unresolved libraries"; exit 1; fi
+          cp "$bundle"/deb/*.deb "$bundle"/rpm/*.rpm "$bundle"/appimage/*.AppImage dist/
+          cp src-tauri/target/release/layout-translator "stage/$name/bin/"
+          for f in models fonts pdfium; do cp -r "src-tauri/resources/$f" "stage/$name/lib/Layout Translator/$f"; done
+          cp packaging/portable-readme-linux.txt "stage/$name/README.txt"
+          tar -czf "dist/$name.tar.gz" -C stage "$name"   # tar.gz, not zip: it keeps the executable bit
+          ls -l dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.suffix }}
           path: dist/*
           if-no-files-found: error
 
-  # One job publishes for all platforms, so the three builds never race to create the same release.
+  # One job publishes for all platforms, so the builds never race to create the same release.
   publish:
     needs: build
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master'
@@ -134,7 +169,7 @@ jobs:
           gh release delete nightly --cleanup-tag --yes || true
           gh release create nightly dist/* --target "$GITHUB_SHA" --prerelease \
             --title "Latest build (master)" \
-            --notes "Automatic, unsigned build of commit ${GITHUB_SHA::7} from master. Replaced by every push. Installers: the setup .exe (Windows) and the .dmg (macOS). Portable: the zip files with 'portable' in the name; unzip and run, nothing is installed. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open."
+            --notes "Automatic, unsigned build of commit ${GITHUB_SHA::7} from master. Replaced by every push. Installers: the setup .exe (Windows), the .dmg (macOS) and the .deb, .rpm and .AppImage (Linux). Portable: the zip files (Windows, macOS) and the tar.gz (Linux) with 'portable' in the name; unpack and run, nothing is installed. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open. On Linux make the .AppImage executable first."
 
       # Tag: a draft release to review and publish by hand.
       - name: Publish draft release (tag)
@@ -142,4 +177,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --draft --prerelease --verify-tag \
             --title "Layout Translator $GITHUB_REF_NAME" \
-            --notes "Unsigned preview build. Installers: the setup .exe (Windows) and the .dmg (macOS). Portable: the zip files with 'portable' in the name; unzip and run. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open."
+            --notes "Unsigned preview build. Installers: the setup .exe (Windows), the .dmg (macOS) and the .deb, .rpm and .AppImage (Linux). Portable: the zip files (Windows, macOS) and the tar.gz (Linux) with 'portable' in the name; unpack and run. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open. On Linux make the .AppImage executable first."

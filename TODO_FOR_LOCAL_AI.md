@@ -59,6 +59,7 @@ Full rules are in `AGENTS.md`. In short: small steps, explain each change in pla
 - [ ] I3. macOS: confirm pdfium and ONNX Runtime dylibs load from inside the `.app`, and document the unsigned-app workaround (or set up signing/notarization).
 - [ ] I4. Windows: document the SmartScreen warning, or set up code signing.
 - [x] I5. `PLAN.md` was updated to match the code (Google Translate dropped). Keep it in sync as things change.
+- [ ] I6. Linux x86_64 is built on Ubuntu 22.04 (oldest runner Tauri v2 supports, for the glibc): `.deb`, `.rpm`, `.AppImage` and a portable `.tar.gz` (`bin/` + `lib/Layout Translator/`, the place Tauri looks in on Linux). The build was run once in a sandbox. Still to confirm on a real GitHub run: ONNX Runtime is linked in statically (the workflow fails on unresolved libraries if not), and the app starts on a clean desktop. No Linux ARM build yet (needs a pinned pdfium arm64 asset and an ARM runner).
 
 ## J. Speed and UI (steps 0-9 of implementations.md)
 - [x] J1. `run_ocr` and `read_region` use the app-wide `EngineCache` (they used to build a new one per call, so the models were reloaded every time).
