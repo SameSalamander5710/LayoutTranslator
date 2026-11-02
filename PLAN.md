@@ -80,10 +80,22 @@ Ship small default OCR models in the installer (tens of MB). Extra languages and
 │  ├─ resources/{models/en, fonts, pdfium}   bundled into the installer
 │  └─ src/
 │     ├─ main.rs        Tauri commands, model-folder lookup
-│     └─ pipeline.rs    OCR + cache, grouping, colours, translate, inpaint, typeset, PDF in/out
-└─ .github/workflows/release.yml
+│     ├─ launcher.rs, crashlog.rs
+│     └─ pipeline/      one file per concern, each with its own unit tests
+│        ├─ mod.rs      the shared `Block` type and imports; re-exports the public functions (`pipeline::detect`, ...)
+│        ├─ ocr.rs      OCR models and engine cache, `detect` (OCR + selectable PDF text)
+│        ├─ pdf_in.rs   pdfium: rasterise pages, selectable text layer
+│        ├─ boxes.rs    group lines into blocks, shrink boxes to their text, merge nested boxes, read a region
+│        ├─ colour.rs   text colour and page colour
+│        ├─ translate.rs  local llama.cpp client, prompts, retries, cache
+│        ├─ typeset.rs  line breaking, text size that fits, page render
+│        ├─ erase.rs    classical erase: stroke fill, blurred fill, overlapping blocks
+│        ├─ imageio.rs  load with EXIF turn, PNG data URL, atomic writes
+│        ├─ pdf_out.rs  PDF writer (one JPEG per page)
+│        └─ testutil.rs helpers shared by the tests of several modules
+└─ .github/workflows/ci.yml, release.yml
 ```
-Later, split `pipeline.rs` into modules (`ocr`, `translate`, `render`, `pdf`) with unit tests.
+A module sees the items of the others through `use super::*;`. Items that other modules need are `pub(super)`; only the functions that `main.rs` calls are `pub`.
 
 ## 5. Phases
 
