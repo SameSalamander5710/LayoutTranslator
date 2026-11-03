@@ -48,6 +48,18 @@ pub fn write_pdf_pages(pages: &[JpegPage], out: &Path) -> Result<(), String> {
     write_atomic(out, &o)
 }
 
+/// Renders every page and writes them as one PDF. One page at a time: the page is rendered, only its JPEG is kept, and
+/// the decoded image is dropped before the next page is rendered. Pages with no blocks are exported as the original.
+pub fn export_pdf(pages: &[(&Path, &[Block])], font: &Path, out: &Path) -> Result<(), String> {
+    let mut done = Vec::with_capacity(pages.len());
+    for (path, blocks) in pages {
+        let im = render(path, font, blocks)?;
+        // Pages that were too large were drawn at a lower resolution; the real one keeps the exported page at its real size.
+        done.push(jpeg_page(&im, page_dpi(path))?);
+    }
+    write_pdf_pages(&done, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

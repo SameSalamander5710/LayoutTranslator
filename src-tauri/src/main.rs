@@ -76,29 +76,15 @@ fn open_server_command_folder(app: AppHandle) -> Result<(), String> {
     launcher::open_folder(dir)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Page { width: u32, height: u32, original: String, blocks: Vec<Block>, layer_lines: usize, ocr_ran: bool }
-
 #[tauri::command]
-async fn run_ocr(app: AppHandle, cache: tauri::State<'_, EngineCache>, path: String, lang: String, mode: Option<String>) -> Result<Page, String> {
+async fn run_ocr(app: AppHandle, cache: tauri::State<'_, EngineCache>, path: String, lang: String, mode: Option<String>) -> Result<pipeline::Page, String> {
     // mode: "hybrid" (default), "ocr" or "text" (see pipeline::detect). Text-only mode needs no OCR model.
     let mode = mode.unwrap_or_else(|| "hybrid".into());
     let dir = if mode == "text" { PathBuf::new() } else { lang_dir(&app, &lang)? };
-    let p = PathBuf::from(&path);
-    let p2 = p.clone();
-    let dir2 = dir.clone();
     let cache = cache.inner().clone(); // the app-wide cache, so the OCR models are loaded once
-    let (mut blocks, layer_lines, ocr_ran) = tauri::async_runtime::spawn_blocking(move || pipeline::detect(&p2, &dir2, &cache, &mode))
+    tauri::async_runtime::spawn_blocking(move || pipeline::detect_page(Path::new(&path), &dir, &cache, &mode))
         .await
-        .map_err(|e| e.to_string())??;
-    let im = pipeline::load_oriented(&p)?;
-    let rgb = im.to_rgb8();
-    for (i, b) in blocks.iter_mut().enumerate() {
-        b.id = i as u32 + 1;
-        pipeline::colors(&rgb, b);
-    }
-    Ok(Page { width: im.width(), height: im.height(), original: pipeline::png_data_url(&im)?, blocks, layer_lines, ocr_ran })
+        .map_err(|e| e.to_string())?
 }
 
 /// The cancel token of the translation request that is running. The Stop button fires it (see `cancel_run`).
@@ -153,30 +139,16 @@ async fn sample_colors(path: String, bbox: [f32; 4]) -> Result<([u8; 3], [u8; 3]
 #[tauri::command]
 async fn test_connection(endpoint: String) -> Result<pipeline::ConnInfo, String> { pipeline::test_connection(&endpoint).await }
 
-// Renders the translated page. Returns a PNG data URL for preview; also writes `out` when given.
-fn pick_font(app: &AppHandle, lang: &str) -> std::path::PathBuf {
-    let dir = app.path().resource_dir().unwrap_or_default().join("fonts");
-    match lang.to_lowercase().as_str() {
-        "ja" | "jpn" | "japanese" => dir.join("NotoSansJP-Regular.ttf"),
-        "zh" | "zh-cn" | "chinese" | "zh-tw" | "chinese-traditional" => dir.join("NotoSansSC-Regular.ttf"),
-        "ko" | "korean" => dir.join("NotoSansKR-Regular.ttf"),
-        _ => dir.join("NotoSans-Regular.ttf"),
-    }
+fn fonts_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts"))
 }
 
+// Renders the translated page. Returns a PNG data URL for preview; also writes `out` when given. `target` is the language of the
+// translation (it decides the font, see pipeline::font_file_name).
 #[tauri::command]
-async fn render_page(app: AppHandle, path: String, blocks: Vec<Block>, out: Option<String>, lang: Option<String>) -> Result<String, String> {
-    let lang = lang.unwrap_or_default();
-    let font = pick_font(&app, &lang);
-    if !font.exists() {
-        let fallback = app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf");
-        let im = pipeline::render(Path::new(&path), &fallback, &blocks)?;
-        if let Some(o) = out { pipeline::save_png(&im, Path::new(&o))?; }
-        return pipeline::png_data_url(&image::DynamicImage::ImageRgba8(im));
-    }
-    let im = pipeline::render(Path::new(&path), &font, &blocks)?;
-    if let Some(o) = out { pipeline::save_png(&im, Path::new(&o))?; }
-    pipeline::png_data_url(&image::DynamicImage::ImageRgba8(im))
+async fn render_page(app: AppHandle, path: String, blocks: Vec<Block>, out: Option<String>, target: Option<String>) -> Result<String, String> {
+    let font = pipeline::resolve_font(&fonts_dir(&app)?, &target.unwrap_or_default());
+    pipeline::render_preview(Path::new(&path), &font, &blocks, out.as_deref().map(Path::new))
 }
 
 // The page images and text layers of the open PDF live in the app cache, one folder per running app (`pages-<pid>`), so two
@@ -227,18 +199,10 @@ struct PageIn { path: String, blocks: Vec<Block> }
 
 // Pages with no blocks (not processed) are exported as the original.
 #[tauri::command]
-async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String, lang: Option<String>) -> Result<(), String> {
-    let lang = lang.unwrap_or_default();
-    let font = pick_font(&app, &lang);
-    let font = if font.exists() { font } else { app.path().resource_dir().map_err(|e| e.to_string())?.join("fonts/NotoSans-Regular.ttf") };
-    // One page at a time: render it, keep only its JPEG, and let the decoded image go before the next page is rendered.
-    let mut done = Vec::with_capacity(pages.len());
-    for p in &pages {
-        let im = pipeline::render(Path::new(&p.path), &font, &p.blocks)?;
-        // Pages that were too large were drawn at a lower resolution; the real one keeps the exported page at its real size.
-        done.push(pipeline::jpeg_page(&im, pipeline::page_dpi(Path::new(&p.path)))?);
-    }
-    pipeline::write_pdf_pages(&done, Path::new(&out))
+async fn export_pdf(app: AppHandle, pages: Vec<PageIn>, out: String, target: Option<String>) -> Result<(), String> {
+    let font = pipeline::resolve_font(&fonts_dir(&app)?, &target.unwrap_or_default());
+    let pages: Vec<(&Path, &[Block])> = pages.iter().map(|p| (Path::new(&p.path), p.blocks.as_slice())).collect();
+    pipeline::export_pdf(&pages, &font, Path::new(&out))
 }
 
 fn main() {

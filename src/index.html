@@ -331,7 +331,7 @@ async function openDoc(path){$('#log').textContent="";log("Opening "+path+" …"
   setSave(false);zoom=1;setView('orig');await go(0);log(pg.length+" page(s) ready.")}
 // Renders can finish in a different order than they started (typing fast). Only the newest request may set the preview.
 async function typeset(i){const p=pg[i],my=p.seq=(p.seq||0)+1;
-  const img=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,lang:fontLang()}));
+  const img=await loadImg(await inv('render_page',{path:p.path,blocks:p.blocks,out:null,target:$('#tgt').value}));
   p.typeset=true;if(my===p.seq)p.out=img}
 // Stop button: `stopReq` ends the run between steps; the Rust command `cancel_run` also drops a translation request in progress.
 let stopReq=false;class Stopped extends Error{}
@@ -381,7 +381,7 @@ $('#run').onclick=async()=>{running(true);$('#prog').max=pg.length;const failed=
 $('#stop').onclick=()=>{stopReq=true;$('#stop').disabled=true;log("Stopping …");inv('cancel_run').catch(()=>{})};
 $('#save').onclick=async()=>{if(busy)return log(busyMsg());const pdf=isPdf;setBusy(true,"export");
   try{const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
-    pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,lang:fontLang()}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,lang:fontLang()});log("Saved "+o)}
+    pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,target:$('#tgt').value}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,target:$('#tgt').value});log("Saved "+o)}
   catch(e){log("Error: "+e)}finally{setBusy(false)}};
 // ---- Paste an image from the clipboard: the button, or Ctrl+V (Cmd+V on a Mac) anywhere outside a text field ----
 if(/Mac|iPhone|iPad/.test(navigator.platform)){$('#pk').textContent='⌘V';$('#paste').title='Paste an image from the clipboard (⌘V)'}
@@ -459,7 +459,6 @@ const LANGS=["English","Spanish","French","German","Italian","Portuguese","Dutch
   addEventListener('resize',()=>{if(!ul.hidden)place()});
   addEventListener('scroll',e=>{if(!ul.hidden&&!ul.contains(e.target))place()},true)})();
 // The font for the translated text depends on the target language (Chinese variants share one font).
-const fontLang=()=>{const v=$('#tgt').value.trim();return /^chinese/i.test(v)?"chinese":v};
 applyMode();
 inv('list_languages').then(ls=>{const sel=$('#lang');ls.forEach(l=>sel.add(new Option(l,l)));if(!ls.length)log("No OCR models found. Run: npm run models")});
 })();

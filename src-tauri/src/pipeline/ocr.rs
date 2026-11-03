@@ -129,6 +129,28 @@ pub fn detect(img: &Path, dir: &Path, cache: &EngineCache, mode: &str) -> Result
     }
 }
 
+/// What the UI gets for a page that was just detected.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Page { pub width: u32, pub height: u32, pub original: String, pub blocks: Vec<Block>, pub layer_lines: usize, pub ocr_ran: bool }
+
+/// `detect`, plus everything a freshly detected page needs before the UI shows it: numbered boxes (1, 2, ...) with their text
+/// and page colours, the size of the page and the page image as a PNG data URL.
+pub fn detect_page(img: &Path, dir: &Path, cache: &EngineCache, mode: &str) -> Result<Page, String> {
+    let (blocks, layer_lines, ocr_ran) = detect(img, dir, cache, mode)?;
+    finish_page(&load_oriented(img)?, blocks, layer_lines, ocr_ran)
+}
+
+/// The part of `detect_page` that needs no models.
+fn finish_page(im: &DynamicImage, mut blocks: Vec<Block>, layer_lines: usize, ocr_ran: bool) -> Result<Page, String> {
+    let rgb = im.to_rgb8();
+    for (i, b) in blocks.iter_mut().enumerate() {
+        b.id = i as u32 + 1;
+        colors(&rgb, b);
+    }
+    Ok(Page { width: im.width(), height: im.height(), original: png_data_url(im)?, blocks, layer_lines, ocr_ran })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +180,24 @@ mod tests {
     fn language_names_cannot_leave_the_models_folder() {
         for ok in ["en", "ja", "zh-CN", "chinese_traditional", "My Language 2"] { assert!(valid_lang_name(ok), "{ok}"); }
         for bad in ["../x", "..", "a/b", "a\\b", "..\\x", "C:", "C:\\x", "/etc", "a..b", "", "a\0b"] { assert!(!valid_lang_name(bad), "{bad:?}"); }
+    }
+
+    #[test]
+    fn a_detected_page_gets_numbered_boxes_with_colours_and_its_size() {
+        let loose = [35.0f32, 35.0, 330.0, 130.0];
+        let blocks = vec![blk(7, loose, [0; 3]), blk(9, [5.0, 5.0, 20.0, 10.0], [0; 3])]; // the ids are replaced
+        let out = finish_page(&DynamicImage::ImageRgb8(striped_page([255, 255, 255])), blocks, 3, true).unwrap();
+        assert_eq!((out.width, out.height), (400, 200));
+        assert_eq!(out.blocks.iter().map(|b| b.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(out.blocks[0].fg.iter().all(|c| *c >= 235), "white letters, found by colors(): {:?}", out.blocks[0].fg);
+        assert!(out.original.starts_with("data:image/png;base64,"));
+        assert_eq!((out.layer_lines, out.ocr_ran), (3, true));
+    }
+
+    #[test]
+    fn the_page_is_sent_to_the_ui_with_the_names_it_reads() {
+        let out = finish_page(&DynamicImage::ImageRgb8(RgbImage::new(10, 10)), vec![], 0, false).unwrap();
+        let json = serde_json::to_value(&out).unwrap();
+        for key in ["width", "height", "original", "blocks", "layerLines", "ocrRan"] { assert!(json.get(key).is_some(), "missing {key}"); }
     }
 }

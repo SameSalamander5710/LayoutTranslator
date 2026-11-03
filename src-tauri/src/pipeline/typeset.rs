@@ -147,6 +147,37 @@ pub fn render(img: &Path, font_path: &Path, blocks: &[Block]) -> Result<image::R
 /// The translated text of one block, fitted into its box and ready to draw.
 pub(super) struct Placed { x: i32, y0: f32, ls: f32, px: f32, lines: Vec<String>, fg: [u8; 3] }
 
+/// The font that is used when the language needs none of the others, and when a font file is missing.
+const LATIN_FONT: &str = "NotoSans-Regular.ttf";
+
+/// The font file for the language the translation is written in, taken from the "target language" field: free text such as
+/// "Japanese", "ja" or "Chinese (Traditional)", in any case. This is the only place that knows which font belongs to which
+/// language. Scripts that need no special font get the Latin one.
+pub fn font_file_name(target: &str) -> &'static str {
+    let t = target.trim().to_lowercase();
+    match t.as_str() {
+        "ja" | "jpn" | "japanese" => "NotoSansJP-Regular.ttf",
+        "ko" | "kor" | "korean" => "NotoSansKR-Regular.ttf",
+        "zh" | "zh-cn" | "zh-tw" | "zho" | "chi" => "NotoSansSC-Regular.ttf",
+        _ if t.starts_with("chinese") => "NotoSansSC-Regular.ttf", // "Chinese (Simplified)", "Chinese (Traditional)", ...
+        _ => LATIN_FONT,
+    }
+}
+
+/// The path of that font in `fonts_dir`. If the file is not there (a trimmed install), the Latin font is used, so the page
+/// still renders (the letters the Latin font lacks come out as missing-glyph boxes, which is better than an error).
+pub fn resolve_font(fonts_dir: &Path, target: &str) -> PathBuf {
+    let font = fonts_dir.join(font_file_name(target));
+    if font.exists() { font } else { fonts_dir.join(LATIN_FONT) }
+}
+
+/// Renders a page for the UI: returns the PNG data URL. With `out` the PNG is also written to that file.
+pub fn render_preview(img: &Path, font: &Path, blocks: &[Block], out: Option<&Path>) -> Result<String, String> {
+    let im = render(img, font, blocks)?;
+    if let Some(o) = out { save_png(&im, o)?; }
+    png_data_url(&DynamicImage::ImageRgba8(im))
+}
+
 pub(super) fn layout(font: &FontArc, b: &Block) -> Option<Placed> {
     let [x, y, w, h] = b.bbox;
     let t = b.translated.as_deref().unwrap_or(&b.text);
@@ -286,5 +317,27 @@ mod tests {
             assert!(fits(&font, text, w, h, px), "{text}: chosen px {px} must fit");
             assert!(!fits(&font, text, w, h, px * 1.05), "{text}: px*1.05 must not fit, so {px} is maximal");
         }
+    }
+
+    #[test]
+    fn the_font_follows_the_language_of_the_translation() {
+        for (target, font) in [
+            ("Japanese", "NotoSansJP-Regular.ttf"), ("ja", "NotoSansJP-Regular.ttf"), ("  JAPANESE ", "NotoSansJP-Regular.ttf"),
+            ("Korean", "NotoSansKR-Regular.ttf"), ("ko", "NotoSansKR-Regular.ttf"),
+            ("Chinese (Simplified)", "NotoSansSC-Regular.ttf"), ("Chinese (Traditional)", "NotoSansSC-Regular.ttf"),
+            ("chinese", "NotoSansSC-Regular.ttf"), ("zh-TW", "NotoSansSC-Regular.ttf"),
+            ("English", "NotoSans-Regular.ttf"), ("German", "NotoSans-Regular.ttf"), ("", "NotoSans-Regular.ttf"), ("Klingon", "NotoSans-Regular.ttf"),
+        ] { assert_eq!(font_file_name(target), font, "for the target language {target:?}"); }
+    }
+
+    #[test]
+    fn a_missing_font_file_falls_back_to_the_latin_font() {
+        let dir = temp_dir("fonts");
+        std::fs::write(dir.join("NotoSans-Regular.ttf"), b"x").unwrap();
+        assert_eq!(resolve_font(&dir, "Japanese"), dir.join("NotoSans-Regular.ttf")); // no Japanese font installed
+        std::fs::write(dir.join("NotoSansJP-Regular.ttf"), b"x").unwrap();
+        assert_eq!(resolve_font(&dir, "Japanese"), dir.join("NotoSansJP-Regular.ttf"));
+        assert_eq!(resolve_font(&dir, "French"), dir.join("NotoSans-Regular.ttf"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
