@@ -37,9 +37,10 @@ jobs:
             suffix: macos-arm64
             target: aarch64-apple-darwin
             args: '--target aarch64-apple-darwin -- --locked'
-          # Ubuntu 22.04 on purpose: the oldest runner that Tauri v2 supports (webkit2gtk 4.1), so that the binary, which needs
-          # the glibc of the machine it was built on, runs on as many distributions as possible. x86_64 only.
-          - platform: ubuntu-22.04
+          # Ubuntu 24.04: the ONNX Runtime static library that ort-sys downloads is built against glibc 2.38
+          # (`__isoc23_strtol`), so Ubuntu 22.04 cannot link it. This sets the minimum for the Linux build:
+          # glibc 2.38 or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+). x86_64 only.
+          - platform: ubuntu-24.04
             suffix: linux-x64
             target: ''
             args: '-- --locked'
@@ -172,7 +173,7 @@ jobs:
           gh release delete nightly --cleanup-tag --yes || true
           gh release create nightly dist/* --target "$GITHUB_SHA" --prerelease \
             --title "Latest build (master)" \
-            --notes "Automatic, unsigned build of commit ${GITHUB_SHA::7} from master. Replaced by every push. Installers: the setup .exe (Windows), the .dmg (macOS) and the .deb, .rpm and .AppImage (Linux). Portable: the zip files (Windows, macOS) and the tar.gz (Linux) with 'portable' in the name; unpack and run, nothing is installed. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open. On Linux make the .AppImage executable first."
+            --notes "Automatic, unsigned build of commit ${GITHUB_SHA::7} from master. Replaced by every push. Installers: the setup .exe (Windows), the .dmg (macOS) and the .deb, .rpm and .AppImage (Linux). Portable: the zip files (Windows, macOS) and the tar.gz (Linux) with 'portable' in the name; unpack and run, nothing is installed. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open. On Linux glibc 2.38 or newer is needed; make the .AppImage executable first."
 
       # Tag: a draft release to review and publish by hand.
       - name: Publish draft release (tag)
@@ -180,4 +181,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --draft --prerelease --verify-tag \
             --title "Layout Translator $GITHUB_REF_NAME" \
-            --notes "Unsigned preview build. Installers: the setup .exe (Windows), the .dmg (macOS) and the .deb, .rpm and .AppImage (Linux). Portable: the zip files (Windows, macOS) and the tar.gz (Linux) with 'portable' in the name; unpack and run. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open. On Linux make the .AppImage executable first."
+            --notes "Unsigned preview build. Installers: the setup .exe (Windows), the .dmg (macOS) and the .deb, .rpm and .AppImage (Linux). Portable: the zip files (Windows, macOS) and the tar.gz (Linux) with 'portable' in the name; unpack and run. On Windows choose 'More info > Run anyway'. On macOS right-click the app > Open. On Linux glibc 2.38 or newer is needed; make the .AppImage executable first."

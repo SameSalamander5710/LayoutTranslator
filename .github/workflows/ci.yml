@@ -24,7 +24,8 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    # Ubuntu 24.04: ONNX Runtime needs glibc 2.38 to link (see release.yml).
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

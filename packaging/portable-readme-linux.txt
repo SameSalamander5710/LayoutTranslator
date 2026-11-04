@@ -9,8 +9,9 @@ in "lib/Layout Translator" next to "bin". To add an OCR language, create
 "lib/Layout Translator/models/<name>/" with det.onnx, rec.onnx and dict.txt and restart.
 
 Requirements
-- A desktop Linux with GTK 3 and WebKitGTK 4.1 (package libwebkit2gtk-4.1-0 on Debian and
-  Ubuntu 22.04+, webkit2gtk4.1 on Fedora). Most current desktop distributions have them.
+- A desktop Linux with glibc 2.38 or newer, GTK 3 and WebKitGTK 4.1 (package libwebkit2gtk-4.1-0
+  on Debian and Ubuntu, webkit2gtk4.1 on Fedora): Ubuntu 24.04+, Debian 13+ or Fedora 39+.
+  The ONNX Runtime library in this build needs the newer glibc, so older distributions cannot run it.
 - A translation server (llama.cpp llama-server): start it yourself, or with the Launch server button (below).
 - Pasting an image (Ctrl+V or the paste button) works under X11 and XWayland.
 

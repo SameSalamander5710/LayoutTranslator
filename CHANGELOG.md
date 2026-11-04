@@ -25,3 +25,4 @@ Dates are not recorded yet: nothing has been released.
 ### Safety and builds
 - Strict content security policy for the app window (checked by `npm run check:csp`). A crash writes `last-error.log` in the app data folder.
 - Windows (x64) and macOS (Apple Silicon): installer and portable version, built by the `release` workflow. The builds are not signed.
+- Linux (x86_64): `.deb`, `.rpm`, `.AppImage` and a portable `.tar.gz`, built on Ubuntu 24.04. It needs glibc 2.38 or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+).
