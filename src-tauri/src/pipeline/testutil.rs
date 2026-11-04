@@ -42,3 +42,27 @@ pub(super) fn pdfium_dir() -> Option<std::path::PathBuf> {
     let lib = pdfium_render::prelude::Pdfium::pdfium_platform_library_name_at_path(&d);
     if lib.exists() { Some(d) } else { eprintln!("pdfium not found in {}; test skipped", d.display()); None }
 }
+
+/// A `TextDetector` that returns the same stored lines for every image (or an error), and counts how often it was asked.
+/// With it, detection is tested without model files.
+pub(super) struct FakeDetector { lines: Vec<Line>, error: Option<String>, pub(super) calls: std::cell::Cell<usize> }
+
+impl FakeDetector {
+    pub(super) fn with(lines: Vec<Line>) -> Self { Self { lines, error: None, calls: Default::default() } }
+    pub(super) fn failing(message: &str) -> Self { Self { lines: vec![], error: Some(message.into()), calls: Default::default() } }
+}
+
+impl TextDetector for FakeDetector {
+    fn lines(&self, _: &RgbImage) -> Result<Vec<Line>, String> {
+        self.calls.set(self.calls.get() + 1);
+        match &self.error { Some(e) => Err(e.clone()), None => Ok(self.lines.clone()) }
+    }
+}
+
+/// Writes an image to a file in a fresh temp folder and returns (folder, file), for the tests that read a page from a path.
+pub(super) fn page_file(name: &str, im: &RgbImage) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = temp_dir(name);
+    let file = dir.join("page.png");
+    im.save(&file).unwrap();
+    (dir, file)
+}

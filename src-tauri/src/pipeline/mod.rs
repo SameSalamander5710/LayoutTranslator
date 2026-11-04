@@ -32,6 +32,7 @@ pub struct Block {
     pub conf: f32, pub font_px: f32, pub fg: [u8; 3], pub bg: [u8; 3],
 }
 
+#[derive(Clone)]
 struct Line { b: [f32; 4], t: String, c: f32, fg: [u8; 3], bg: [u8; 3], layer: bool } // `layer`: from the PDF text layer, not from OCR
 
 mod boxes;

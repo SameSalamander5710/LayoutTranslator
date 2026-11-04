@@ -83,7 +83,7 @@ Ship small default OCR models in the installer (tens of MB). Extra languages and
 │     ├─ launcher.rs, crashlog.rs
 │     └─ pipeline/      one file per concern, each with its own unit tests
 │        ├─ mod.rs      the shared `Block` type and imports; re-exports the public functions (`pipeline::detect`, ...)
-│        ├─ ocr.rs      OCR models and engine cache, `detect` (OCR + selectable PDF text)
+│        ├─ ocr.rs      OCR models and engine cache, the `TextDetector` trait (real engine or a test fake), `detect`
 │        ├─ pdf_in.rs   pdfium: rasterise pages, selectable text layer
 │        ├─ boxes.rs    group lines into blocks, shrink boxes to their text, merge nested boxes, read a region
 │        ├─ colour.rs   text colour and page colour

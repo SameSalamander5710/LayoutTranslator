@@ -18,3 +18,4 @@ This is a Tauri v2 app: Rust core in `src-tauri/src`, plain HTML/JS UI in `src/`
 - `ci.yml` runs `cargo test` and `cargo clippy --all-targets -- -D warnings` on every push and pull request. Run both in `src-tauri` before you push.
 - Write every change that a user can see in `CHANGELOG.md` (under "Unreleased").
 - A Tauri command returns `Result<_, AppError>` (`error.rs`): code below it returns `String` errors, and `?` converts them. Name a kind (`AppError::server(..)`, `AppError::no_model(..)`) only where the UI does something different for it, and in the UI show an error with `errText(e)`. Slow work (OCR, rendering, PDF, big images) goes through `blocking(|| ...)`.
+- Test detection, grouping and reading a region with `FakeDetector` (`pipeline/testutil.rs`), not with the OCR models. Only `ocr_lines` may call the OCR crates.

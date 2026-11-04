@@ -150,6 +150,10 @@ pub fn sample_colors(img: &Path, bbox: [f32; 4]) -> Result<([u8; 3], [u8; 3]), S
 /// Builds a block for a box the user drew: selectable PDF text under the box if there is any (unless mode is "ocr"),
 /// otherwise OCR on just that area (unless mode is "text"). The text may come back empty; the user can type it in.
 pub fn read_region(img: &Path, dir: &Path, cache: &EngineCache, bbox: [f32; 4], mode: &str) -> Result<Block, String> {
+    read_region_with(&OcrEngine { dir, cache }, img, bbox, mode)
+}
+
+fn read_region_with(det: &dyn TextDetector, img: &Path, bbox: [f32; 4], mode: &str) -> Result<Block, String> {
     let im = load_oriented(img)?.to_rgb8();
     let (iw, ih) = im.dimensions();
     let x0 = bbox[0].max(0.0).min(iw as f32 - 1.0);
@@ -166,7 +170,7 @@ pub fn read_region(img: &Path, dir: &Path, cache: &EngineCache, bbox: [f32; 4], 
     }
     if found.is_empty() && mode != "text" {
         let crop = image::imageops::crop_imm(&im, region[0] as u32, region[1] as u32, region[2] as u32, region[3] as u32).to_image();
-        for o in ocr_lines(&crop, dir, cache)? { conf = conf.min(o.c); found.push((o.b[1], o.b[0], o.t.clone(), o.b[3])); }
+        for o in det.lines(&crop)? { conf = conf.min(o.c); found.push((o.b[1], o.b[0], o.t.clone(), o.b[3])); }
     }
     found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let text = found.iter().map(|f| f.2.as_str()).collect::<Vec<_>>().join(" ");
@@ -343,5 +347,31 @@ mod tests {
         assert_eq!(overlap_frac(&a, &[0.0, 0.0, 100.0, 100.0]), 1.0); // fully inside
         assert_eq!(overlap_frac(&a, &[200.0, 0.0, 10.0, 10.0]), 0.0); // apart
         assert!((overlap_frac(&a, &[20.0, 10.0, 50.0, 10.0]) - 0.5).abs() < 1e-6); // half covered
+    }
+
+    #[test]
+    fn a_region_is_read_through_the_detector_and_its_lines_come_in_reading_order() {
+        let (dir, file) = page_file("region-read", &RgbImage::from_pixel(300, 200, Rgb([255, 255, 255])));
+        let mut low = line(20.0, 60.0, 80.0, 20.0, "second", [0; 3]);
+        low.c = 0.6;
+        let det = FakeDetector::with(vec![low, line(20.0, 10.0, 80.0, 20.0, "first", [0; 3])]); // not in reading order
+        let b = read_region_with(&det, &file, [10.0, 10.0, 200.0, 100.0], "ocr").unwrap();
+        assert_eq!(b.text, "first second");
+        assert_eq!(b.bbox, [10.0, 10.0, 200.0, 100.0]); // the box is the region the user drew
+        assert!((b.conf - 0.6).abs() < 1e-6, "the confidence is the lowest of the lines: {}", b.conf);
+        assert_eq!(det.calls.get(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_region_with_no_text_gives_an_empty_box_and_text_mode_never_asks_the_detector() {
+        let (dir, file) = page_file("region-empty", &RgbImage::from_pixel(300, 200, Rgb([255, 255, 255])));
+        let det = FakeDetector::with(vec![]);
+        let b = read_region_with(&det, &file, [10.0, 10.0, 100.0, 50.0], "ocr").unwrap();
+        assert_eq!((b.text.as_str(), b.conf), ("", 0.0));
+        let det = FakeDetector::with(vec![line(0.0, 0.0, 50.0, 20.0, "x", [0; 3])]);
+        let b = read_region_with(&det, &file, [10.0, 10.0, 100.0, 50.0], "text").unwrap();
+        assert_eq!((b.text.as_str(), det.calls.get()), ("", 0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
