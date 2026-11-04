@@ -156,7 +156,8 @@ function setBusy(on,what=""){busy=on;busyWhat=on?what:"";$('#browse').disabled=o
 const setSave=v=>{saveReady=v;$('#save').disabled=!v||busy};
 const P=()=>pg[cur]||{blocks:[],orig:null,out:null};
 const log=m=>{const l=$('#log');l.textContent+=m+"\n";l.scrollTop=l.scrollHeight};
-const errText=e=>String(e&&e.message||e);
+const errText=e=>String(e&&e.message||e); // errors from Rust are { kind, message }; other errors are strings or Error objects
+const isCancelled=e=>!!e&&e.kind==='cancelled'; // the Stop button ended the request
 const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=()=>no(new Error("The page image could not be decoded"));i.src=u});
 // Anything that slips through (a promise nobody awaited, a timer callback) ends up in the log instead of vanishing.
 addEventListener('unhandledrejection',e=>log("Error: "+errText(e.reason)));
@@ -229,7 +230,7 @@ async function rereadIfChanged(p,b){const m=meta(p,b);
 async function refreshColors(b){try{const c=await inv('sample_colors',{path:P().path,bbox:b.bbox});b.fg=c[0];b.bg=c[1]}catch(e){}}
 async function addBox(rect){const p=P();let b;
   try{b=await inv('read_region',{path:p.path,lang:$('#lang').value,mode:$('#mode').value,bbox:rect.map(v=>Math.round(v))})}
-  catch(e){log("Could not read text in the new box: "+e);b={id:0,bbox:rect,text:"",translated:null,conf:0,fontPx:rect[3]*.6,fg:[0,0,0],bg:[255,255,255]}}
+  catch(e){log("Could not read text in the new box: "+errText(e));b={id:0,bbox:rect,text:"",translated:null,conf:0,fontPx:rect[3]*.6,fg:[0,0,0],bg:[255,255,255]}}
   b.id=Math.max(0,...p.blocks.map(k=>k.id))+1;remember(p,snap(p));p.blocks.push(b);sel=b.id;meta(p,b).read=[...b.bbox];
   log(b.text?`Added box ${b.id}: "${b.text.slice(0,40)}"`:`Added box ${b.id} (no text found; type it in the Text blocks tab).`);
   syncBoxUi();list();render();retypeset(cur)}
@@ -237,7 +238,7 @@ function delBox(){if(sel==null)return;const p=P();remember(p,snap(p));p.blocks=p
 async function retranslate(id){if(busy)return log(busyMsg());const i=cur,p=pg[i];setBusy(true,"retranslate");log(`Translating block ${id} …`);
   try{const r=await inv('translate_blocks',{blocks:p.blocks,target:$('#tgt').value,endpoint:$('#url').value,options:opts(),only:[id]});p.blocks=r.blocks;
     if(r.missing)log(`Block ${id} got no translation. Try again, or check the server.`);
-    if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+e)}finally{setBusy(false)}}
+    if(p.out)await typeset(i);if(i===cur)list()}catch(e){log("Error: "+errText(e))}finally{setBusy(false)}}
 cv.addEventListener('pointerdown',e=>{if(view!=='boxes'||e.button!==0||!P().ocr||busy)return;const[x,y]=ptr(e);
   if(adding)drag={kind:'add',x0:x,y0:y,rect:[x,y,0,0]};
   else{const h=hit(x,y);if(!h){sel=null;syncBoxUi();render();return}sel=h.b.id;const m=meta(P(),h.b);m.read??=[...h.b.bbox];drag={kind:'edit',k:h.k,b:h.b,x0:x,y0:y,start:[...h.b.bbox],p:P(),before:snap(P())}}
@@ -324,7 +325,7 @@ async function setDoc(path){if(busy)return log(busyMsg());setBusy(true,"open");
   try{await openDoc(path)}finally{setBusy(false)}
   autoDetect(cur)} // detection is fast, so it starts as soon as the file is open
 async function openDoc(path){$('#log').textContent="";log("Opening "+path+" …");$$('.steps li').forEach(l=>{l.className="";l.lastChild.textContent="waiting"});
-  try{pg=(await inv('open_document',{path})).map(p=>({path:p,blocks:[],orig:null,out:null,ocr:false}))}catch(e){return log("Error: "+e)}
+  try{pg=(await inv('open_document',{path})).map(p=>({path:p,blocks:[],orig:null,out:null,ocr:false}))}catch(e){return log("Error: "+errText(e))}
   isPdf=/\.pdf$/i.test(path);
   $('#mode').querySelector('option[value=text]').disabled=!isPdf;
   if(!isPdf&&$('#mode').value==='text'){$('#mode').value='hybrid';applyMode();log("Selectable-text mode is only for PDFs; switched to Automatic.")}
@@ -370,19 +371,19 @@ async function doPage(i){const p=pg[i],n=pg.length,lab=`page ${i+1}/${n}`;
 $('#run').onclick=async()=>{running(true);$('#prog').max=pg.length;const failed=[]; // one broken page must not waste the rest of a long run
   try{for(let i=0;i<pg.length;i++){$('#prog').value=i;log(`Page ${i+1}/${pg.length} …`);
       try{await doPage(i)}
-      catch(e){if(e instanceof Stopped||String(e)==="Cancelled")throw e; // Stop still ends the whole run
+      catch(e){if(e instanceof Stopped||isCancelled(e))throw e; // Stop still ends the whole run
         const why=String(e&&e.message||e);failed.push(`${i+1} (${why})`);log(`Page ${i+1} failed: ${why}`);
         $$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="failed"})}}
     $('#prog').value=pg.length;setSave(true);
     log(failed.length?`Done. ${failed.length} page(s) failed: ${failed.join(", ")}. Press Run all to try them again.`:"Done.")}
-  catch(e){if(e instanceof Stopped||String(e)==="Cancelled"){$$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="stopped"});log("Stopped. Pages that were already finished are kept.")}
-    else log("Error: "+e)}
+  catch(e){if(e instanceof Stopped||isCancelled(e)){$$('.steps li.run').forEach(l=>{l.className="";l.lastChild.textContent="stopped"});log("Stopped. Pages that were already finished are kept.")}
+    else log("Error: "+errText(e))}
   finally{running(false)}};
 $('#stop').onclick=()=>{stopReq=true;$('#stop').disabled=true;log("Stopping …");inv('cancel_run').catch(()=>{})};
 $('#save').onclick=async()=>{if(busy)return log(busyMsg());const pdf=isPdf;setBusy(true,"export");
   try{const o=await T.dialog.save({defaultPath:pdf?"translated.pdf":"translated.png",filters:[pdf?{name:"PDF",extensions:["pdf"]}:{name:"PNG",extensions:["png"]}]});if(!o)return;
     pdf?await inv('export_pdf',{pages:pg.map(p=>({path:p.path,blocks:p.blocks})),out:o,target:$('#tgt').value}):await inv('render_page',{path:pg[0].path,blocks:pg[0].blocks,out:o,target:$('#tgt').value});log("Saved "+o)}
-  catch(e){log("Error: "+e)}finally{setBusy(false)}};
+  catch(e){log("Error: "+errText(e))}finally{setBusy(false)}};
 // ---- Paste an image from the clipboard: the button, or Ctrl+V (Cmd+V on a Mac) anywhere outside a text field ----
 if(/Mac|iPhone|iPad/.test(navigator.platform)){$('#pk').textContent='⌘V';$('#paste').title='Paste an image from the clipboard (⌘V)'}
 let pasting=false;
@@ -397,7 +398,7 @@ const setConn=(c,t)=>{const e=$('#conn');e.className="st "+c;e.textContent=t};
 $('#test').onclick=async()=>{setConn("","Testing…");$('#test').disabled=true;
   try{const r=await inv('test_connection',{endpoint:$('#url').value});
     if(r.slots){const n=Math.min(16,r.slots);$('#par').value=n;localStorage.setItem("lt_par",n)} // use the server's -np value
-    setConn(r.warning?"warn":"ok","✓ "+r.message+(r.warning?" ⚠ "+r.warning:""))}catch(e){setConn("bad","✗ "+e)}$('#test').disabled=false};
+    setConn(r.warning?"warn":"ok","✓ "+r.message+(r.warning?" ⚠ "+r.warning:""))}catch(e){setConn("bad","✗ "+errText(e))}$('#test').disabled=false};
 $('#url').addEventListener('input',()=>setConn("","Not tested"));
 // ---- Launch server: runs a command that the user sets. The command is kept in a text file (server-command.txt, see launcher.rs). ----
 let srvSaved="";
@@ -420,7 +421,7 @@ $('#launch').onclick=async()=>{const b=$('#launch');
   catch(e){setConn("bad","✗ "+errText(e));log("Error: "+errText(e))}
   setTimeout(()=>{b.disabled=false},2000)};            // not twice by accident
 srvLoad();
-$('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+e));
+$('#mdir').onclick=()=>inv('open_models_dir').catch(e=>log("Error: "+errText(e)));
 (function(){const t=$('#mdirHelp'),box=$('#mdirHelpBox'),wrap=t.parentElement;
   const show=()=>{const r=t.getBoundingClientRect(),w=box.offsetWidth||260;
     box.style.top=(r.bottom+6)+'px';box.style.left=Math.max(8,Math.min(r.right-w,window.innerWidth-w-8))+'px';box.hidden=false},hide=()=>box.hidden=true;

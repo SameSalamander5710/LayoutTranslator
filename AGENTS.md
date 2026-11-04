@@ -17,3 +17,4 @@ This is a Tauri v2 app: Rust core in `src-tauri/src`, plain HTML/JS UI in `src/`
 - Run `npm run check:csp` after you change `src/index.html`, and `npm run check:version` after you touch a version. Change the app version only with `npm run version:set -- x.y.z`: it is in six places that must agree.
 - `ci.yml` runs `cargo test` and `cargo clippy --all-targets -- -D warnings` on every push and pull request. Run both in `src-tauri` before you push.
 - Write every change that a user can see in `CHANGELOG.md` (under "Unreleased").
+- A Tauri command returns `Result<_, AppError>` (`error.rs`): code below it returns `String` errors, and `?` converts them. Name a kind (`AppError::server(..)`, `AppError::no_model(..)`) only where the UI does something different for it, and in the UI show an error with `errText(e)`. Slow work (OCR, rendering, PDF, big images) goes through `blocking(|| ...)`.
