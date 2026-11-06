@@ -1,43 +1,52 @@
 # Layout Translator [work in progress]
 
-Drop in an image, get it back with the text translated in the same layout. OCR is PaddleOCR (ONNX) in Rust; translation goes to a local llama.cpp `llama-server` (base URL only, no API key or model name needed). Windows first, macOS via CI. See PLAN.md for the architecture.
+A fully offline tool for in-line text translation in PDFs or image files, using an OpenAI-compatible LLM endpoint. Outputs the translated file, similar to capabilities offered by DeepL or Google Translate.
 
-## Run it (Windows)
-1. Install Rust (rustup, MSVC), Visual Studio Build Tools "Desktop development with C++", Node LTS.
-2. Edit `scripts/models.json`: fill in the three English model URLs (see `_help`). Then `npm install` and `npm run models` (also fetches pdfium and the font).
-3. Create icons once: `npx tauri icon path\to\any-square.png`.
-4. `llama-server -m your-model.gguf --port 8080 -np 4 -c 16384`, then `npm run tauri dev`. `-np` is the number of requests the server handles at once; set the same number under "Parallel requests" in the app (the Test connection button reads it for you). The context size `-c` is shared between the slots, so use about 4096 per slot.
+## Quick Start
 
-## Start the server from the app
-Next to **Test connection** is the **Launch server** button. It runs a command that you set, for example the `llama-server` command from step 4 above.
-1. Click the pencil icon next to **Launch server**.
-2. Paste your command and click **Save**.
-3. Click **Launch server**. A terminal window opens and runs the command.
-4. Click **Test connection** when the model has loaded.
-
-Close the terminal window to stop the server.
-
-The command is a plain text file named `server-command.txt`. Any text editor can change it, and the **Show file** button opens its folder. The file is next to the program when that folder is writable (the Windows installer and the portable zip). Otherwise it is in the per-user app data folder. On macOS it is always there, because the app folder is inside the signed app.
-
-The terminal depends on the system:
-- Windows: `cmd.exe`. The command runs as a batch file, so write a percent sign as `%%`.
-- macOS: Terminal.
-- Linux: the program in the `TERMINAL` environment variable, or the first of `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `mate-terminal`, `kitty`, `alacritty`, `lxterminal` and `xterm` that is installed.
-
-The command runs with your user rights, exactly as you wrote it. Do not use a command that you do not trust.
+1. Download the appropriate installer or portable version of the app from the Releases/Nightly builds.
+2. Install or extract the zip file, and run `Layout Translator.exe`
+3. Launch an OpenAI-compatible LLM server endpoint. See *here* for an example.
+4. Ensure that the server is reachable with the `Test connection` button.
+5. Drop in your image file/PDF.
+6. (Optional) Adjust the text detection boxes if needed.
+7. `Run all` to initiate the translation.
+8. `Save file`
 
 ## Languages
-The English model ships in `models/en` next to the app. To add one, create `models/<name>/` there with `det.onnx`, `rec.onnx`, `dict.txt` and restart. The Windows installer is per-user so that folder is writable.
+The English model ships in `models/en` next to the app. To add one, create `models/<name>/` there with `det.onnx`, `rec.onnx`, `dict.txt`.
 
-## Status
-Builds with `cargo check` in `src-tauri`. Models (PP-OCRv5 English) and pdfium downloaded via `npm run models`. Icons generated. Follow `TODO_FOR_LOCAL_AI.md` step by step.
+## Features
 
-## If the app closes by itself
-The release build has no console window. A crash writes its message and a backtrace to `last-error.log` in the app data folder (on Windows `%APPDATA%\com.example.layouttranslator\last-error.log`, on macOS `~/Library/Application Support/com.example.layouttranslator/last-error.log`, on Linux `~/.local/share/com.example.layouttranslator/last-error.log`). Attach that file to a bug report. It is only written when the app crashes. Look through it before sharing it: a panic message can quote text the app was working on.
+- Adjustable text recognition boxes to demarcate areas to translate, or fix text detection issues.
+- Choice between direct text selection, OCR, or hybrid text detection.
+- Inpaints the area behind the translated text to make it look less distracting.
+- Possibilty of editing individual translated texts prior to saving the file.
+- Option to add additional context or glossary before translation, to tune the tone or setting of the translated text.
+- Direct comparison of original and translated document with a slider.
 
-## Builds and downloads
-Every push to `master` runs the `release` workflow (pushes that only change `.md` files are skipped). It builds for Windows (x64), macOS (Apple Silicon only; there is no Intel Mac build, see `TODO_FOR_LOCAL_AI.md` I2) and Linux (x86_64, built on Ubuntu 24.04; needs glibc 2.38 or newer) and replaces the pre-release **Latest build (master)** (tag `nightly`) on the Releases page with:
-- the installers: the `..._x64-setup.exe` (Windows), the `.dmg` files (macOS) and the `.deb`, `.rpm` and `.AppImage` files (Linux);
-- the portable versions: the zip files with `portable` in the name. Windows: unzip, run `Layout Translator.exe`, nothing is installed (needs the WebView2 runtime that Windows 11 and updated Windows 10 already have). macOS: unzip and open the app. Linux: unpack the `.tar.gz` and run `bin/layout-translator` (needs glibc 2.38 or newer, GTK 3 and WebKitGTK 4.1: Ubuntu 24.04+, Debian 13+ or Fedora 39+); the `.AppImage` is a single file: `chmod +x` it and run it.
+## Example server setup
 
-Pushing a tag such as `v0.1.0` puts the same files into a **draft** release for you to review and publish. All builds are unsigned (Windows: "More info > Run anyway"; macOS: right-click the app > Open). Settings > Actions > General > Workflow permissions must be "Read and write". A manual run (Actions > release > Run workflow) on another branch only keeps the files as workflow artifacts.
+If you are new to running LLMs locally, here are simplified steps on Windows 11 to give you an idea:
+1. Install [llama.cpp](https://github.com/ggml-org/llama.cpp): [(Installation instructions)](https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md)
+    - On Windows 11, you can install it via the terminal with
+    ```bash 
+    winget install llama.cpp
+    ``` 
+2. Launch OpenAI-compatible API server with `llama-server`
+    - You can manually download a model, or directly use `-hf` to download from HuggingFace.
+    - 
+    - The following command does a one-time download of a Gemma4 E4B model from HuggingFace and launches the server. This particular command is well suited for GPUs with 8 GB VRAM or above.
+
+WIth a GPU with 8 GB VRAM or more:
+
+```bash
+llama-server -hf unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL -ngl 99 -c 65536 -ctk q8_0 -ctv q8_0 --spec-type draft-mtp,ngram-mod --spec-draft-n-max 4 -fit on --flash-attn on --n-cpu-moe 0 --parallel 4 --temp 1.0 --top-p 0.95 --top-k 64 --load-mode none
+```
+If no GPU is available, then run on the CPU with:
+
+```bash
+llama-server -hf unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL -ngl 0 -c 65536 -ctk q8_0 -ctv q8_0 --spec-type draft-mtp,ngram-mod --spec-draft-n-max 2 -fit on --flash-attn on --parallel 1 --temp 1.0 --top-p 0.95 --top-k 64 --load-mode none
+```
+
+

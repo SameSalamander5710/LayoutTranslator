@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn normalise_makes_one_form_of_every_text() {
-        assert_eq!(normalise("\u{feff}  llama-server -m a.gguf\r\n--port 8080 \r\n\r\n"), "llama-server -m a.gguf\n--port 8080");
+        assert_eq!(normalise("\u{feff}  llama-server -m a.gguf\r\n--port 9931 \r\n\r\n"), "llama-server -m a.gguf\n--port 9931");
         assert_eq!(normalise("a\rb"), "a\nb");
         assert_eq!(normalise(" \n "), "");
     }
@@ -302,9 +302,9 @@ mod tests {
         let d = temp_dir("save");
         let c = vec![d.join("app").join(COMMAND_FILE), d.join("user").join(COMMAND_FILE)];
         assert_eq!(load_command(&c).unwrap(), StoredCommand { command: String::new(), path: c[0].clone() }, "nothing saved yet");
-        let s = save_command(&c, "  llama-server -m \"C:\\my models\\a.gguf\"\r\n  --port 8080\r\n").unwrap();
+        let s = save_command(&c, "  llama-server -m \"C:\\my models\\a.gguf\"\r\n  --port 9931\r\n").unwrap();
         assert_eq!(s.path, c[0], "the first folder that accepts the file");
-        assert_eq!(std::fs::read_to_string(&s.path).unwrap(), "llama-server -m \"C:\\my models\\a.gguf\"\n  --port 8080\n", "human readable");
+        assert_eq!(std::fs::read_to_string(&s.path).unwrap(), "llama-server -m \"C:\\my models\\a.gguf\"\n  --port 9931\n", "human readable");
         assert_eq!(load_command(&c).unwrap(), s);
         // an empty command clears it
         assert_eq!(save_command(&c, "  ").unwrap().command, "");
@@ -336,8 +336,8 @@ mod tests {
 
     #[test]
     fn the_windows_script_is_a_batch_file() {
-        let s = windows_script("My \"server\" & 100%", "llama-server -m \"C:\\modèles\\a.gguf\" ^\n  --port 8080 && echo ok");
-        assert_eq!(s, "@echo off\r\nchcp 65001 >nul\r\ntitle My server  100\r\nllama-server -m \"C:\\modèles\\a.gguf\" ^\r\n  --port 8080 && echo ok\r\n");
+        let s = windows_script("My \"server\" & 100%", "llama-server -m \"C:\\modèles\\a.gguf\" ^\n  --port 9931 && echo ok");
+        assert_eq!(s, "@echo off\r\nchcp 65001 >nul\r\ntitle My server  100\r\nllama-server -m \"C:\\modèles\\a.gguf\" ^\r\n  --port 9931 && echo ok\r\n");
         assert_eq!(windows_script("", "x"), format!("@echo off\r\nchcp 65001 >nul\r\ntitle {WINDOW_TITLE}\r\nx\r\n"), "an empty title becomes the default");
     }
 

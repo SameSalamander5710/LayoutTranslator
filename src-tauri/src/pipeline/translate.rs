@@ -90,11 +90,11 @@ pub(super) fn prefix(target: &str, o: &TranslateOptions, page_text: &str) -> Vec
 }
 
 /// Cleans up the endpoint address typed by the user: surrounding spaces and a trailing `/` go, and `http://` is added when
-/// there is no scheme (`127.0.0.1:8080/v1` is accepted). Spaces inside the address and other schemes are refused with a
+/// there is no scheme (`127.0.0.1:9931/v1` is accepted). Spaces inside the address and other schemes are refused with a
 /// message, because the network error for them says nothing useful.
 pub fn endpoint_url(base: &str) -> Result<String, String> {
     let t = base.trim().trim_end_matches('/');
-    if t.is_empty() { return Err("Enter the endpoint URL, for example http://127.0.0.1:8080/v1".into()); }
+    if t.is_empty() { return Err("Enter the endpoint URL, for example http://127.0.0.1:9931/v1".into()); }
     if t.chars().any(char::is_whitespace) { return Err("The endpoint URL must not contain spaces".into()); }
     match t.split_once("://") {
         Some((scheme, _)) if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") => Ok(t.to_string()),
@@ -196,7 +196,7 @@ pub(super) fn http() -> &'static reqwest::Client {
 #[serde(rename_all = "camelCase")]
 pub struct ConnInfo { pub message: String, pub slots: Option<u32>, pub warning: Option<String> }
 
-/// Checks that the server answers at `base` (e.g. http://127.0.0.1:8080/v1). llama-server's `/props` page, when available,
+/// Checks that the server answers at `base` (e.g. http://127.0.0.1:9931/v1). llama-server's `/props` page, when available,
 /// also tells how many parallel slots it was started with (-np) and how many tokens of context each slot has.
 pub async fn test_connection(base: &str) -> Result<ConnInfo, String> {
     let base = endpoint_url(base)?;
@@ -449,11 +449,11 @@ mod tests {
 
     #[test]
     fn endpoint_urls_are_cleaned_up() {
-        assert_eq!(endpoint_url("  http://127.0.0.1:8080/v1/  ").unwrap(), "http://127.0.0.1:8080/v1");
-        assert_eq!(endpoint_url("127.0.0.1:8080/v1").unwrap(), "http://127.0.0.1:8080/v1", "scheme added");
-        assert_eq!(endpoint_url("localhost:8080").unwrap(), "http://localhost:8080");
+        assert_eq!(endpoint_url("  http://127.0.0.1:9931/v1/  ").unwrap(), "http://127.0.0.1:9931/v1");
+        assert_eq!(endpoint_url("127.0.0.1:9931/v1").unwrap(), "http://127.0.0.1:9931/v1", "scheme added");
+        assert_eq!(endpoint_url("localhost:9931").unwrap(), "http://localhost:9931");
         assert_eq!(endpoint_url("HTTPS://example.com/v1").unwrap(), "HTTPS://example.com/v1");
-        assert!(endpoint_url("http://127.0.0.1 :8080/v1").unwrap_err().contains("spaces"));
+        assert!(endpoint_url("http://127.0.0.1 :9931/v1").unwrap_err().contains("spaces"));
         assert!(endpoint_url("ftp://host/v1").unwrap_err().contains("http://"));
         assert!(endpoint_url("   ").is_err());
     }

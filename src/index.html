@@ -83,11 +83,11 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
   <div class="row mt6 aic"><button id="mdir">Open models folder</button><span class="tip"><button type="button" id="mdirHelp" class="ib q" aria-label="How to add a language" aria-describedby="mdirHelpBox">?</button><span class="tipbox" id="mdirHelpBox" role="tooltip" hidden>To add a language, put a folder named after it (for example <b>models/fr</b>) in that folder with det.onnx, rec.onnx and dict.txt, then restart the app.</span></span></div>
 
   <h2 class="mt18">2. Translation endpoint</h2>
-  <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:8080/v1">
+  <label for="url">Base URL</label><input id="url" value="http://127.0.0.1:9931/v1">
   <div class="row mt6"><button id="test">Test connection</button><span class="pair"><button id="launch">Launch server</button><button type="button" id="srvEditBtn" class="ib" aria-label="Edit the command of Launch server" title="Edit the command of Launch server" aria-expanded="false" aria-controls="srvEdit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button></span><span id="conn" class="st" role="status" aria-live="polite">Not tested</span></div>
   <div id="srvEdit" hidden>
     <label for="srvCmd">Command that starts your translation server</label>
-    <textarea id="srvCmd" rows="4" spellcheck="false" autocomplete="off" placeholder="llama-server -m /path/to/model.gguf --port 8080 -np 2 -c 8192"></textarea>
+    <textarea id="srvCmd" rows="4" spellcheck="false" autocomplete="off" placeholder="llama-server -m /path/to/model.gguf --port 9931 -np 2 -c 8192"></textarea>
     <div class="row mt6 aic"><button id="srvSave" class="p">Save</button><button id="srvCancel">Cancel</button><button id="srvShow">Show file</button></div>
     <p class="note" id="srvNote"></p>
     <p class="note mt0">Launch server runs this command in a new terminal window that stays open. Close that window to stop the server. On Windows the command runs as a batch file, so write a percent sign as %%.</p>
@@ -137,7 +137,7 @@ button.q{width:26px;height:26px;padding:0;font-weight:600;border:0;background:tr
     <li data-s="ty"><span>Erase and typeset</span><span>waiting</span></li>
   </ul>
   <progress id="prog" value="0" max="1" hidden aria-label="Progress"></progress>
-  <div class="row"><button class="p" id="run" disabled>Run all</button><button id="stop" hidden>Stop</button><button id="save" disabled>Save PNG</button></div>
+  <div class="row"><button class="p" id="run" disabled>Run all</button><button id="stop" hidden>Stop</button><button id="save" disabled>Save file</button></div>
   <div id="log" aria-live="polite"></div>
 </section>
 </main>
