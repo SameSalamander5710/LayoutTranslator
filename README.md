@@ -59,6 +59,9 @@ Each language is one folder with exactly three files:
 
 Recognisers in the release: `latin` (French, German, Spanish, Italian, Portuguese, ...), `en`, `cyrillic`, `eslav`, `el` (Greek), `korean`, `arabic`, `devanagari`, `ta`, `te`, `th`. For Chinese, use `pp-ocrv5_mobile_rec.onnx` with `ppocrv5_dict.txt`.
 
+Note: Japanese uses an older PP-OCRv3 recogniser: `japan_pp-ocrv3_mobile_rec.onnx`. Its dictionary is not in the `oar-ocr` release. Download `japan_dict.txt` from the [PaddleOCR dictionary folder](https://github.com/PaddlePaddle/PaddleOCR/tree/main/ppocr/utils/dict), rename it to `dict.txt`, and use `pp-ocrv5_mobile_det.onnx` as `det.onnx`.
+The same pattern applies to Georgian (ka_pp-ocrv3_mobile_rec.onnx + ka_dict.txt) and Traditional Chinese (chinese_cht_pp-ocrv3_mobile_rec.onnx + chinese_cht_dict.txt).
+
 Example for French: create a folder `fr` and put these three files in it:
 
 models/fr/
