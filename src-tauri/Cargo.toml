@@ -18,7 +18,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 oar-ocr = "0.10"         # PaddleOCR via ONNX Runtime
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray"] }
 image = "0.25"
-imageproc = "0.25"
+imageproc = "0.27"
 ab_glyph = "0.2"
 base64 = "0.22"
 futures-util = "0.3"       # runs several translation requests at once
