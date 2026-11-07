@@ -127,3 +127,31 @@ Suggested first prompts:
 1. "Read AGENTS.md, PLAN.md and TODO_FOR_LOCAL_AI.md. Walk me through section A on Windows, one step at a time."
 2. "Do B1 and B2: help me find the English PP-OCRv5 ONNX model files and fill scripts/models.json."
 3. "Do E1: build a fixture set and show me how the inpainting looks on each."
+
+## 9. Tuning constants
+
+These numbers were chosen by looking at pages, not derived. Before you change one, run `cargo test`: the unit tests check the logic, and the golden tests (`src-tauri/tests/golden.rs`, three drawn pages: `poster`, `scan`, `dark`) show what the change does to the picture. The last column says what is known to react. For the erase constants this was measured by changing each one and running the golden tests; "no golden page" means the constant is covered by unit tests only.
+
+| Constant | Value | File | What it controls | Reacts |
+|---|---|---|---|---|
+| `RELAX_PASSES` | 20 | `erase.rs` | Passes of the diffusion fill for thin strokes | golden `poster` (at 5) |
+| `ERASE_PAD` | 3 px | `erase.rs` | How far past its box the erase of a block reaches; also when two blocks are erased as one group | golden `poster`, `dark` (at 1) |
+| text mask | limit = contrast / 4, between 24 and 60; grown by 2 px | `erase.rs` (`analyse_crop`) | Which pixels count as text | golden `poster`, `scan` |
+| `FROST_COVER` | 0.6 | `erase.rs` | Share of "clearly different" pixels above which the whole box is rebuilt as a blur | golden `dark` (at 0.3) |
+| `DENSE_COVER` | 0.5 | `erase.rs` | Share of the grown text mask above which the push-pull fill is used instead of the diffusion fill | golden `poster` (at 0.3) |
+| `PULL_TRUST` | 4.0 | `erase.rs` | How fast a partly known cell of the push-pull fill is trusted (lower mixes two backgrounds to grey) | golden `dark` (at 1.0) |
+| blur | context = height / 2 (8 to 40 px); radius = height / 6 (2 to 10 px), two passes | `erase.rs` (`frosted_fill`) | How much of the page the blurred fill looks at, and how soft it is | golden `dark` |
+| `PageColours` | at most 1500 cells; radius = 0.75 x text height (6 to 30 px); step = radius / 6; skip tolerance 60 | `colour.rs` | The page colour behind each pixel (median of a window, text-coloured pixels left out) | colour unit tests, golden none |
+| `text_colour` | scale = 98th percentile of the differences; below 30 = no text; "text" over 60% of the box = not trusted; vote = clearest 30%; 16 bins per channel | `colour.rs` | Text colour of a box | colour unit tests |
+| grouping | overlap more than 50% of the narrower line; size ratio 0.85 to 1.18; gap between -0.3 and 0.5 of the line height; text colour distance under 90 | `boxes.rs` (`group_tagged`) | Which lines become one block | `group_*` unit tests |
+| `TIGHT_FG_TOL` / `TIGHT_MIN_PIXELS` / `TIGHT_KEEP` | 90 / 12 / 0.25 | `boxes.rs` | Colour match, minimum text, and smallest height a box may be shrunk to; also: 3 px border, a row needs 2% of the width, page-colour distance 30, padding 2 px + 5% | `tighten` unit tests |
+| `NESTED_FRAC` | 0.9 | `boxes.rs` | Share of a block inside another one at which they merge | `merge_nested` unit tests |
+| `MAX_WORD_GAP` | 0.9 line heights | `pdf_in.rs` | Largest gap between words of selectable PDF text that still counts as one line | `layer_*` unit tests |
+| `PDF_DPI` / `MAX_SIDE_PX` | 200 / 6000 | `mod.rs` / `pdf_in.rs` | Resolution of a rasterised PDF page, and the longest side before it is rendered smaller | `large_pages_*` unit tests |
+| `MIN_PX` and the fit search | 3 px; 0.25 px steps | `typeset.rs` | Smallest text size and the precision of "largest size that fits the box" | golden `scan`, `poster` |
+| `CONTEXT_MAX_CHARS` / `BATCH_MAX_BLOCKS` / `BATCH_MAX_CHARS` | 6000 / 25 / 3000 | `translate.rs` | What is sent to the server in one request | translate unit tests |
+| `RETRIES` / `RETRY_WAIT` / `CACHE_MAX_PAGES` | 3 / 2 s / 256 | `translate.rs` | Retries of a failed request, and the translation cache size | translate unit tests |
+| `HIST_MAX` / `SAME_AREA` | 10 / 0.8 | `index.html` | Undo steps per page; how much two boxes must overlap to count as the same content | UI harness (not in the repository) |
+
+If you change a constant on purpose and a golden page changes: look at the new image (the test names the file), and if it is better, `UPDATE_GOLDEN=1 cargo test --test golden` and commit the new PNGs.
+
