@@ -14,7 +14,7 @@ ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "n
 image = "0.25"
 imageproc = "0.25"
 ab_glyph = "0.2"
-base64 = "0.22"
+base64 = "0.23"
 futures-util = "0.3"       # runs several translation requests at once
 unicode-linebreak = "0.1"  # where a line may break (Japanese, Chinese, ...)
 unicode-segmentation = "1" # grapheme clusters, for cutting a word that is wider than the box
