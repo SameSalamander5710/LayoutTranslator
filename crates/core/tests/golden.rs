@@ -14,14 +14,14 @@
 use ab_glyph::{FontArc, PxScale};
 use image::{Rgb, RgbImage, RgbaImage};
 use imageproc::{drawing::{draw_filled_rect_mut, draw_text_mut}, rect::Rect};
-use layout_translator::pipeline::{render, Block};
+use layout_translator_core::pipeline::{render, Block};
 use std::path::{Path, PathBuf};
 
 const MEAN_TOLERANCE: f64 = 0.25; // mean difference per pixel, in grey levels (0 to 255)
 const BIG_DIFF: u8 = 32; // a pixel is "different" when one of its channels is this much off ...
 const BIG_SHARE: f64 = 0.0005; // ... and at most this share of the pixels may be
 
-fn font_path() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf") }
+fn font_path() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources/fonts/NotoSans-Regular.ttf") } // bundled into the app from there
 
 fn font() -> FontArc {
     FontArc::try_from_vec(std::fs::read(font_path()).expect("the font is missing: run `npm run models`")).unwrap()

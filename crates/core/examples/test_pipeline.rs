@@ -1,5 +1,5 @@
 // Test harness for the pipeline: ocr, translate, render, geom modes.
-use layout_translator::pipeline::{self, Block};
+use layout_translator_core::pipeline::{self, Block};
 use std::path::Path;
 
 fn main() {
@@ -63,7 +63,7 @@ fn translate(a: &[String]) {
     let blocks: Vec<Block> = serde_json::from_str(&std::fs::read_to_string(&a[0]).unwrap()).unwrap();
     let mut blocks = blocks;
     let cache = pipeline::TranslationCache::default();
-    let (cached, missing) = tauri::async_runtime::block_on(pipeline::translate(
+    let (cached, missing) = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(pipeline::translate(
         &mut blocks,
         &a[1], &a[2], &pipeline::TranslateOptions::default(), None, &cache,
     ))
@@ -85,17 +85,17 @@ fn render(a: &[String]) {
         let [x, y, w, h] = b.bbox;
         let t = b.translated.as_deref().unwrap_or(&b.text);
         if t.trim().is_empty() || w < 4.0 || h < 4.0 { continue; }
-        let px = layout_translator::pipeline::fit_px(&font, t, w as u32, h as u32);
-        let lines = layout_translator::pipeline::wrap(&font, px, t, w as u32);
-        let ls = layout_translator::pipeline::line_spacing(&font, px);
+        let px = layout_translator_core::pipeline::fit_px(&font, t, w as u32, h as u32);
+        let lines = layout_translator_core::pipeline::wrap(&font, px, t, w as u32);
+        let ls = layout_translator_core::pipeline::line_spacing(&font, px);
         let (mut top, mut bot) = (f32::MAX, f32::MIN);
         for (i, l) in lines.iter().enumerate() {
             if l.is_empty() { continue; }
-            let (t2, b2, _) = layout_translator::pipeline::text_geom(&font, px, l);
+            let (t2, b2, _) = layout_translator_core::pipeline::text_geom(&font, px, l);
             top = top.min(i as f32 * ls + t2);
             bot = bot.max(i as f32 * ls + b2);
         }
-        let ok = top != f32::MAX && bot - top <= h && lines.iter().all(|l| layout_translator::pipeline::text_geom(&font, px, l).2 <= w);
+        let ok = top != f32::MAX && bot - top <= h && lines.iter().all(|l| layout_translator_core::pipeline::text_geom(&font, px, l).2 <= w);
         println!("#{} px={px:.1} lines={} ink_h={:.1}/box_h={:.0} x={:.0} y={:.0} fit={ok} {:?}", b.id, lines.len(), bot - top, h, x, y, t);
     }
     let im = pipeline::render(Path::new(&a[0]), Path::new(&a[2]), &blocks).expect("render failed");

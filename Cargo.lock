@@ -2390,8 +2390,20 @@ dependencies = [
 name = "layout-translator"
 version = "0.1.0"
 dependencies = [
- "ab_glyph",
  "arboard",
+ "layout-translator-core",
+ "serde",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio-util",
+]
+
+[[package]]
+name = "layout-translator-core"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
  "base64 0.22.1",
  "futures-util",
  "image",
@@ -2403,11 +2415,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
  "tokio",
- "tokio-util",
  "unicode-linebreak",
  "unicode-segmentation",
 ]

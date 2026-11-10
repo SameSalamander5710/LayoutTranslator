@@ -9,7 +9,7 @@
 
 
 ## Status
-Builds with `cargo check` in `src-tauri`. Models (PP-OCRv5 English) and pdfium downloaded via `npm run models`. Icons generated. Follow `TODO_FOR_LOCAL_AI.md` step by step.
+Builds with `cargo check --workspace`. Models (PP-OCRv5 English) and pdfium downloaded via `npm run models`. Icons generated. Follow `TODO_FOR_LOCAL_AI.md` step by step.
 
 
 ## Builds and downloads

@@ -1,0 +1,25 @@
+[package]
+name = "layout-translator-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { version = "1", default-features = false, features = ["time"] } # waits between retries (already in the tree through reqwest and tauri; MIT)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+oar-ocr = "0.10"         # PaddleOCR via ONNX Runtime
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray"] }
+image = "0.25"
+imageproc = "0.25"
+ab_glyph = "0.2"
+base64 = "0.22"
+futures-util = "0.3"       # runs several translation requests at once
+unicode-linebreak = "0.1"  # where a line may break (Japanese, Chinese, ...)
+unicode-segmentation = "1" # grapheme clusters, for cutting a word that is wider than the box
+rayon = "1.12"            # erases and lays out the blocks of a page on all CPU cores
+pdfium-render = "0.8"   # binds to a pdfium library shipped in src-tauri/resources/pdfium
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] } # async tests, the example, and a small mock server (MIT)

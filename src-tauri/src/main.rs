@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use layout_translator::error::AppError;
-use layout_translator::launcher;
-use layout_translator::pipeline::{self, Block, EngineCache};
+use layout_translator_core::error::AppError;
+use layout_translator_core::launcher;
+use layout_translator_core::pipeline::{self, Block, EngineCache};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -226,7 +226,7 @@ fn main() {
         .setup(|app| {
             clear_pages(app.handle());
             // A panic that is not inside a command would close the app silently; keep a trace for bug reports.
-            if let Ok(d) = app.path().app_data_dir() { layout_translator::crashlog::install(d.join("last-error.log")); }
+            if let Ok(d) = app.path().app_data_dir() { layout_translator_core::crashlog::install(d.join("last-error.log")); }
             // Scripts of the server launcher that a crash left behind
             launcher::sweep_old_scripts(&std::env::temp_dir(), std::time::Duration::from_secs(24 * 3600));
             Ok(())

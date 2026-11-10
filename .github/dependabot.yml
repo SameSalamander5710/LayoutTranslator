@@ -5,7 +5,7 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /src-tauri
+    directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 3

@@ -1,0 +1,4 @@
+# Build output stays in src-tauri/target, where it was before the workspace existed. The release workflow, the docs and
+# .gitignore all name that folder, and the Tauri tool asks cargo where it is.
+[build]
+target-dir = "src-tauri/target"

@@ -6,8 +6,12 @@ pub(super) fn line(x: f32, y: f32, w: f32, h: f32, t: &str, fg: [u8; 3]) -> Line
     Line { b: [x, y, w, h], t: t.into(), c: 0.9, fg, bg: [255; 3], layer: false }
 }
 
+/// The fonts and pdfium that `npm run models` downloads. They are bundled into the app from src-tauri/resources, so the tests of the
+/// core read them from there.
+pub(super) fn resources_dir() -> std::path::PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources") }
+
 pub(super) fn test_font() -> FontArc {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+    let p = resources_dir().join("fonts/NotoSans-Regular.ttf");
     FontArc::try_from_vec(std::fs::read(p).unwrap()).unwrap()
 }
 
@@ -38,7 +42,7 @@ pub(super) fn temp_dir(name: &str) -> std::path::PathBuf {
 
 /// The pdfium library that `npm run models` puts in resources/pdfium. The tests that need it are skipped without it.
 pub(super) fn pdfium_dir() -> Option<std::path::PathBuf> {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/pdfium");
+    let d = resources_dir().join("pdfium");
     let lib = pdfium_render::prelude::Pdfium::pdfium_platform_library_name_at_path(&d);
     if lib.exists() { Some(d) } else { eprintln!("pdfium not found in {}; test skipped", d.display()); None }
 }

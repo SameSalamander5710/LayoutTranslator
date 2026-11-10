@@ -40,7 +40,7 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: '. -> src-tauri/target'
 
       # What Tauri needs to compile (GTK, WebKitGTK 4.1). The tests do not open a window.
       - name: Install Linux build dependencies
@@ -53,7 +53,7 @@ jobs:
       # Fails if the security policy (CSP) is weakened or index.html uses something the policy blocks
       - run: npm run check:csp
 
-      # Fails if the app version is not the same in all six places (see scripts/version.mjs)
+      # Fails if the app version is not the same in all the places that hold it (see scripts/version.mjs)
       - run: npm run check:version
 
       # Fonts, OCR models and pdfium that some tests read; kept between runs, pinned by scripts/models.json
@@ -63,10 +63,9 @@ jobs:
           key: resources-${{ hashFiles('scripts/models.json') }}
       - run: npm run models
 
+      # The core crate (everything that does the work) and the app. `cargo test -p layout-translator-core` alone needs no GTK or WebKit.
       - name: Tests
-        working-directory: src-tauri
-        run: cargo test --locked
+        run: cargo test --locked --workspace
 
       - name: Clippy
-        working-directory: src-tauri
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings

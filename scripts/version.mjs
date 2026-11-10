@@ -1,4 +1,4 @@
-// One place to read and change the app version. It lives in six places that must agree (and `--locked` builds fail if
+// One place to read and change the app version. It lives in several files that must agree (and `--locked` builds fail if
 // Cargo.lock does not match Cargo.toml):
 //   node scripts/version.mjs               check that all of them are the same (CI runs this: npm run check:version)
 //   node scripts/version.mjs set 0.2.0     change all of them (npm run version:set -- 0.2.0)
@@ -7,8 +7,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 // Each place: the file, and a pattern with three groups: text before the version, the version, text after it.
 const PLACES = [
-  { file: 'src-tauri/Cargo.toml', re: /(^\[package\][\s\S]*?^version = ")([^"]+)(")/m },
-  { file: 'src-tauri/Cargo.lock', re: /(name = "layout-translator"\r?\nversion = ")([^"]+)(")/ },
+  { file: 'Cargo.toml', re: /(^\[workspace\.package\][\s\S]*?^version = ")([^"]+)(")/m }, // both crates take it from here
+  { file: 'Cargo.lock', re: /(name = "layout-translator(?:-core)?"\r?\nversion = ")([^"]+)(")/g }, // the app and the core crate
   { file: 'src-tauri/tauri.conf.json', re: /("version"\s*:\s*")([^"]+)(")/ },
   { file: 'package.json', re: /("version"\s*:\s*")([^"]+)(")/ },
   { file: 'package-lock.json', re: /("name": "layout-translator",\s*"version": ")([^"]+)(")/g }, // top level and packages[""]

@@ -1,0 +1,16 @@
+# The Rust code is two crates:
+#   crates/core   everything that does the work (detect, translate, erase, typeset, PDF), with its tests. It does not
+#                 depend on Tauri, so `cargo test -p layout-translator-core` needs no GTK or WebKit.
+#   src-tauri     the app: Tauri commands, the window, the model folders. It calls the core.
+[workspace]
+resolver = "2"
+members = ["crates/core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"         # change it with `npm run version:set -- x.y.z`, which also updates the other files that hold it
+edition = "2021"
+rust-version = "1.99"     # the toolchain in rust-toolchain.toml; raise both together
+
+# Profiles are read from this file only.
+[profile.dev.package."*"]
+opt-level = 3             # OCR is unusably slow at opt-level 0

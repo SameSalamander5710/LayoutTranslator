@@ -45,7 +45,7 @@ input file
 Block { id, bbox:[x,y,w,h], text, translated?, conf, fontPx, fg, bg }
 ```
 
-`bbox` is in pixels of the page image, `fg` is the text colour and `bg` the page colour around the text (both `[r,g,b]`). A page is a flat list of blocks; which page it belongs to is known only to the UI. `fontPx` is filled in but not used: the typeset text is as large as fits the box. Rotated text (`angle`) and bold text (`weight`) are not modelled yet. The struct is `Block` in `src-tauri/src/pipeline.rs`; if you change it, change the JS objects in `src/index.html` in the same commit.
+`bbox` is in pixels of the page image, `fg` is the text colour and `bg` the page colour around the text (both `[r,g,b]`). A page is a flat list of blocks; which page it belongs to is known only to the UI. `fontPx` is filled in but not used: the typeset text is as large as fits the box. Rotated text (`angle`) and bold text (`weight`) are not modelled yet. The struct is `Block` in `crates/core/src/pipeline/mod.rs`; if you change it, change the JS objects in `src/index.html` in the same commit.
 
 ## 3. Technology decisions
 
@@ -72,27 +72,31 @@ Ship small default OCR models in the installer (tens of MB). Extra languages and
 ## 4. Repository layout (as built)
 
 ```
-├─ package.json, README.md, PLAN.md, TODO_FOR_LOCAL_AI.md, AGENTS.md
+├─ package.json, Cargo.toml (workspace), Cargo.lock, rust-toolchain.toml, AGENTS.md, README.md
+├─ docs/                       PLAN.md, TODO_FOR_LOCAL_AI.md, CHANGELOG.md, BUILD.md
+├─ .cargo/config.toml          build output goes to src-tauri/target (the workflows and .gitignore name that folder)
 ├─ src/index.html              the real UI (needs Tauri)
-├─ scripts/{fetch-models.mjs, models.json}   fonts, OCR models, PDFium
-├─ src-tauri/
+├─ scripts/{fetch-models.mjs, models.json, version.mjs, check-csp.mjs}   fonts, OCR models, PDFium; checks
+├─ crates/core/                everything that does the work; no Tauri dependency, so its tests need no GTK or WebKit
+│  ├─ src/{lib.rs, error.rs, launcher.rs, crashlog.rs}
+│  ├─ src/pipeline/            one file per concern, each with its own unit tests
+│  │  ├─ mod.rs      the shared `Block` type and imports; re-exports the public functions (`pipeline::detect`, ...)
+│  │  ├─ ocr.rs      OCR models and engine cache, the `TextDetector` trait (real engine or a test fake), `detect`
+│  │  ├─ pdf_in.rs   pdfium: rasterise pages, selectable text layer
+│  │  ├─ boxes.rs    group lines into blocks, shrink boxes to their text, merge nested boxes, read a region
+│  │  ├─ colour.rs   text colour and page colour
+│  │  ├─ translate.rs  local llama.cpp client, prompts, retries, cache
+│  │  ├─ typeset.rs  line breaking, text size that fits, page render
+│  │  ├─ erase.rs    classical erase: stroke fill, blurred fill, overlapping blocks
+│  │  ├─ imageio.rs  load with EXIF turn, PNG data URL, atomic writes
+│  │  ├─ pdf_out.rs  PDF writer (one JPEG per page)
+│  │  └─ testutil.rs helpers shared by the tests of several modules
+│  ├─ tests/{golden.rs, golden/, fixtures/}   three drawn pages compared with stored images
+│  └─ examples/test_pipeline.rs
+├─ src-tauri/                  the app
 │  ├─ Cargo.toml, tauri.conf.json, capabilities/default.json
-│  ├─ resources/{models/en, fonts, pdfium}   bundled into the installer
-│  └─ src/
-│     ├─ main.rs        Tauri commands, model-folder lookup
-│     ├─ launcher.rs, crashlog.rs
-│     └─ pipeline/      one file per concern, each with its own unit tests
-│        ├─ mod.rs      the shared `Block` type and imports; re-exports the public functions (`pipeline::detect`, ...)
-│        ├─ ocr.rs      OCR models and engine cache, the `TextDetector` trait (real engine or a test fake), `detect`
-│        ├─ pdf_in.rs   pdfium: rasterise pages, selectable text layer
-│        ├─ boxes.rs    group lines into blocks, shrink boxes to their text, merge nested boxes, read a region
-│        ├─ colour.rs   text colour and page colour
-│        ├─ translate.rs  local llama.cpp client, prompts, retries, cache
-│        ├─ typeset.rs  line breaking, text size that fits, page render
-│        ├─ erase.rs    classical erase: stroke fill, blurred fill, overlapping blocks
-│        ├─ imageio.rs  load with EXIF turn, PNG data URL, atomic writes
-│        ├─ pdf_out.rs  PDF writer (one JPEG per page)
-│        └─ testutil.rs helpers shared by the tests of several modules
+│  ├─ resources/{models/en, fonts, pdfium}   bundled into the installer; the tests of the core read the fonts from here
+│  └─ src/main.rs              Tauri commands, model-folder lookup
 └─ .github/workflows/ci.yml, release.yml
 ```
 A module sees the items of the others through `use super::*;`. Items that other modules need are `pub(super)`; only the functions that `main.rs` calls are `pub`.
@@ -130,7 +134,7 @@ Suggested first prompts:
 
 ## 9. Tuning constants
 
-These numbers were chosen by looking at pages, not derived. Before you change one, run `cargo test`: the unit tests check the logic, and the golden tests (`src-tauri/tests/golden.rs`, three drawn pages: `poster`, `scan`, `dark`) show what the change does to the picture. The last column says what is known to react. For the erase constants this was measured by changing each one and running the golden tests; "no golden page" means the constant is covered by unit tests only.
+These numbers were chosen by looking at pages, not derived. Before you change one, run `cargo test`: the unit tests check the logic, and the golden tests (`crates/core/tests/golden.rs`, three drawn pages: `poster`, `scan`, `dark`) show what the change does to the picture. The last column says what is known to react. For the erase constants this was measured by changing each one and running the golden tests; "no golden page" means the constant is covered by unit tests only.
 
 | Constant | Value | File | What it controls | Reacts |
 |---|---|---|---|---|
@@ -153,5 +157,5 @@ These numbers were chosen by looking at pages, not derived. Before you change on
 | `RETRIES` / `RETRY_WAIT` / `CACHE_MAX_PAGES` | 3 / 2 s / 256 | `translate.rs` | Retries of a failed request, and the translation cache size | translate unit tests |
 | `HIST_MAX` / `SAME_AREA` | 10 / 0.8 | `index.html` | Undo steps per page; how much two boxes must overlap to count as the same content | UI harness (not in the repository) |
 
-If you change a constant on purpose and a golden page changes: look at the new image (the test names the file), and if it is better, `UPDATE_GOLDEN=1 cargo test --test golden` and commit the new PNGs.
+If you change a constant on purpose and a golden page changes: look at the new image (the test names the file), and if it is better, `UPDATE_GOLDEN=1 cargo test -p layout-translator-core --test golden` and commit the new PNGs.
 

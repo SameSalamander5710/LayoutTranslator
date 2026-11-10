@@ -65,7 +65,7 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: '. -> src-tauri/target'
 
       # Linux only: what Tauri needs to compile (GTK, WebKitGTK 4.1) and to make the .deb, .rpm and AppImage
       - name: Install Linux build dependencies
