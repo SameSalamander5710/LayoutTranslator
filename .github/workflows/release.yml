@@ -50,9 +50,9 @@ jobs:
           # with ORT_LIB_LOCATION; see TODO_FOR_LOCAL_AI.md I2.
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
 
@@ -139,7 +139,7 @@ jobs:
           tar -czf "dist/$name.tar.gz" -C stage "$name"   # tar.gz, not zip: it keeps the executable bit
           ls -l dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.suffix }}
           path: dist/*
@@ -156,7 +156,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: build-*
           merge-multiple: true
